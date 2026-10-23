@@ -1035,6 +1035,63 @@ auto_review:
   target, so a correctly calibrated target does not flicker. The cutoff shown as "calibrated" is
   only taken from a cached or last-run calibration made for the CURRENT target.
 
+#### Whole-photo feature set (optional; measured before any switch)
+
+```yaml
+ranker:
+  feature_set: face_crop_v1   # default (today's ranker); face_crop_whole_photo_v1 adds the whole-photo vector
+```
+- **What it is.** `face_crop_v1` is today's 1280-d vector (ArcFace + face-crop CLIP), model,
+  calibration and decisions, unchanged. `face_crop_whole_photo_v1` appends a 768-d CLIP vector
+  pooled over EVERY unique photo card of the profile (all frames, in order, no quality filter):
+  you decide on all of a profile's photos, and the first photo alone is much weaker. Offline
+  (502 labels, pre-registered) it lifted identity-grouped AUC 0.725 -> 0.749. `labels.embedding`
+  and `auto_passes.embedding` always hold the v1 vector; the whole-photo vector lives in its own
+  `photo_features` table, written live by Training and AUTO in either mode (`source=live`) and
+  by the backfill (`source=backfill`). The like button is painted out of every card (so the
+  vector does not encode the Hinge build), and frames in which no photo card is found are an
+  extraction failure, never a zero-card row.
+- **Cost in either mode.** Each archived AUTO pass spends about 2-3 s computing its whole-photo
+  row on the run's thread before the post-pass pause, in every mode (likes are not archived and
+  spend nothing). In `face_crop_v1` Training the row is computed only after the Hub action has
+  completed, so it never delays or fails the Like/Dislike; in whole-photo mode it is part of the
+  action's save. In `face_crop_v1` mode every row is written best-effort: a failed row is a
+  WARNING (the backfill fills it later) and can never fail a later save or the shutdown flush.
+- **Fail loud.** In `face_crop_whole_photo_v1` mode a label with no usable `photo_features` row
+  makes the ranker NOT READY ("N of M labels lack whole-photo features; run python -m
+  tools.backfill_photo_features"); it is never dropped or zero-filled, and an AUTO decision whose
+  whole-photo vector cannot be computed (including frames with no photo card) stops the run
+  instead of falling back to v1. An AUTO run that starts NOT READY for this reason stops as
+  "whole-photo features missing" with that sentence, and the hub's model-quality card shows
+  BACKFILL NEEDED: more Training cannot fix it.
+- **Backfill** (labels made before the feature existed):
+  `python -m tools.backfill_photo_features --config config.yaml [--dry-run] [--limit N] [--workers K]`.
+  It lists only labels with no usable row (so it resumes and is idempotent), downloads each
+  label's archived frames read-only from the private bucket, refuses a label whose frame does
+  not match its stored sha256, embeds them with the live `Embedder.embed_whole_photos`, and
+  writes `source=backfill`. It prints coverage before/after, the card-count distribution and
+  how the extractor's two pixel cues decided the cards in the 0.5..0.8 white band (the one place
+  it departs from the offline experiment's CLIP rule), and exits 1 if any label failed (re-run
+  to retry). `--dry-run` computes everything and writes nothing. A label with no archived frames
+  at all (a pruned auto-pass archive, or a label older than photo archiving), or whose frames
+  hold no recognisable photo card, can never be backfilled; while one exists the whole-photo
+  mode stays NOT READY.
+- **Comparison** (after the backfill reaches full coverage):
+  `python -m tools.compare_feature_sets --config config.yaml [--seeds 20] [--orders 20]`. Read-only.
+  Same labels, same order, both feature sets: identity-grouped 5-fold OOF AUC over 20 shuffled
+  seeds with the paired ΔAUC and its Nadeau-Bengio corrected repeated-CV t 95% interval; the
+  hub card's nested recall-target evaluation at `like_recall_target` averaged over 20 row orders
+  (dislikes_passed, accepted_recall, share of the deck liked, unwanted and lost likes per 100);
+  time-forward ΔAUC at 50/60/70/80% cuts (diagnostic only). Aggregates only. Exit 0 = SWITCH,
+  3 = KEEP, 2 = cannot compare (it says why).
+- **PRE-REGISTERED SWITCH RULE** (fixed before the live comparison; a result never edits it):
+  switch to `face_crop_whole_photo_v1` only if ALL hold: (1) the corrected-t 95% CI of the
+  paired ΔAUC has its lower bound > 0; (2) Δ>0 on at least 95% of seeds; (3) the mean nested
+  dislikes_passed at the configured recall target is not lower than v1's; (4) the mean nested
+  accepted_recall is not lower than v1's by more than 0.01. Otherwise keep `face_crop_v1`.
+- **Switching** is setting `ranker.feature_set: face_crop_whole_photo_v1` and restarting;
+  switching back is setting `face_crop_v1` again. No label is rewritten either way.
+
 ---
 
 ## 5. Always-on (optional) — run it off your laptop

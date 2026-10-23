@@ -444,6 +444,11 @@ ranker:
   min_labels_to_engage: 40     # ranker stays "not ready" until this many labels (needs both like+pass)
   retrain_every: 1             # training mode: retrain live after each new label
   min_per_class: 5             # each class (like/pass) needs at least this many examples to train
+  # Which vector the ranker learns from. face_crop_v1 = today's 1280-d face-crop vector.
+  # face_crop_whole_photo_v1 adds a 768-d vector pooled over ALL of a profile's photos (stored in
+  # photo_features); it is NOT READY until every label has one (python -m tools.backfill_photo_features),
+  # and switching is decided by python -m tools.compare_feature_sets.
+  feature_set: face_crop_v1
 
 # --- Auto pass review ---
 # AUTO archives every profile it PASSES (screenshots + score + embedding). The hub's "Review auto

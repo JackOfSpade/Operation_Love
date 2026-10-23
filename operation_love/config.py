@@ -37,6 +37,7 @@ from .bigquery_validation import (
     BIGQUERY_IDENTIFIER_PATTERNS,
     validate_bigquery_photo_bucket,
 )
+from .ranker.threshold import DEFAULT_FEATURE_SET, FEATURE_SETS
 from .training_actions import MAX_PROFILE_REVIEW_FRAMES
 
 
@@ -57,6 +58,11 @@ class RankerCfg:
     # tired/late session) may cost, in recall points.  Only meaningful with a recall target;
     # it caps the policy's threshold lift at the lift worth this much recall.
     contextual_recall_budget: float = 0.02
+    # Which vector the ranker trains and scores on (ranker/threshold.py FEATURE_SETS).
+    # `face_crop_v1` is the 1280-d face-crop vector alone; `face_crop_whole_photo_v1` appends
+    # the 768-d whole-photo vector from the `photo_features` table, and the ranker is NOT READY
+    # while any label lacks one (tools/backfill_photo_features.py fills them).
+    feature_set: str = DEFAULT_FEATURE_SET
 
 
 @dataclass
@@ -1966,6 +1972,14 @@ def _validate_core_scalars(cfg: Config) -> None:
         minimum=0,
         maximum=0.2,
     )
+    if (
+        not isinstance(cfg.ranker.feature_set, str)
+        or cfg.ranker.feature_set not in FEATURE_SETS
+    ):
+        raise ValueError(
+            f"Config: ranker.feature_set must be one of {list(FEATURE_SETS)} "
+            f"(got {_safe_value_repr(cfg.ranker.feature_set)})"
+        )
     _require_bool(cfg.auto_review.enabled, "auto_review.enabled")
     if isinstance(cfg.auto_review.max_archived_passes, bool) or not isinstance(
         cfg.auto_review.max_archived_passes, int

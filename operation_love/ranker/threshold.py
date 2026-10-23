@@ -72,6 +72,21 @@ MIN_RANDOM_REVIEWS = 10
 # One-sided 95% (normal quantile) for the Wilson bound.
 WILSON_Z = 1.645
 
+# `ranker.feature_set`: which vector the ranker trains and scores on.  `face_crop_v1` is the
+# 1280-d face-crop vector stored in `labels.embedding` (and the default: nothing else is read).
+# `face_crop_whole_photo_v1` appends the profile's whole-photo CLIP vector from the
+# `photo_features` table (vision/photo_cards.py), 1280 + 768 = 2048 dims; the first 512 dims stay
+# the ArcFace identity template that out-of-fold grouping reads.
+FEATURE_SET_FACE_CROP_V1 = "face_crop_v1"
+FEATURE_SET_FACE_CROP_WHOLE_PHOTO_V1 = "face_crop_whole_photo_v1"
+FEATURE_SETS = (FEATURE_SET_FACE_CROP_V1, FEATURE_SET_FACE_CROP_WHOLE_PHOTO_V1)
+DEFAULT_FEATURE_SET = FEATURE_SET_FACE_CROP_V1
+# What FeatureSetIncomplete tells the operator to run.
+BACKFILL_PHOTO_FEATURES_COMMAND = "python -m tools.backfill_photo_features"
+# `PreferenceModel.not_ready_kind` (and the AUTO worker's stop_kind) for a ranker left NOT READY
+# by FeatureSetIncomplete, so no surface mistakes it for a cold start.
+FEATURE_SET_INCOMPLETE_KIND = "feature_set_incomplete"
+
 
 def is_calibration_source(source: object) -> bool:
     """True when a label with this ``source`` counts as a manual calibration label."""
@@ -430,28 +445,150 @@ def effective_target(target: float, extra: float) -> float:
     return max(target, min(MAX_EFFECTIVE_TARGET, target + max(0.0, extra)))
 
 
-def fetch_label_rows(store) -> list:
-    """The store's labels for ``PreferenceModel.train``.
+def require_feature_set(value: object) -> str:
+    """``value`` when it names a known ranker feature set; ``ValueError`` otherwise."""
+    if not isinstance(value, str) or value not in FEATURE_SETS:
+        raise ValueError(
+            f"ranker feature set must be one of {list(FEATURE_SETS)} (got {value!r})"
+        )
+    return value
 
-    ``load_label_rows()`` (``(liked, embedding, source)`` triples) when the store has it, else
-    ``load_labels()`` (``(liked, embedding)`` pairs -- every pair is a manual calibration
-    label).  Duck-typed on purpose: test doubles and older stores implement only part of the
-    surface.
+
+class FeatureSetIncomplete(Exception):
+    """Labels lack the stored features the configured feature set needs.
+
+    Raised by :func:`fetch_label_rows` in ``face_crop_whole_photo_v1`` mode when any label has
+    no usable ``photo_features`` row: no row at all, or a stored zero-card row (written before
+    zero photo cards became an extraction failure; the backfill re-lists and recomputes those).
+    Such a label is never dropped or zero-filled (that would train on a different label set
+    than the one the owner made, or on a fabricated feature); the ranker is NOT READY with
+    :attr:`reason` until the backfill has filled them.  ``missing`` labels out of ``labels``
+    lack a usable row, ``zero_cards`` of them because their row records zero photo cards.
     """
-    loader = getattr(store, "load_label_rows", None)
-    return loader() if callable(loader) else store.load_labels()
+
+    def __init__(self, missing: int, labels: int, zero_cards: int = 0):
+        self.missing = _count(missing, "missing")
+        self.labels = _count(labels, "labels")
+        self.zero_cards = _count(zero_cards, "zero_cards")
+        if self.zero_cards > self.missing:
+            raise ValueError("zero_cards must not exceed missing")
+        super().__init__(self.missing, self.labels, self.zero_cards)
+
+    @property
+    def reason(self) -> str:
+        """The operator-facing not-ready reason (also ``str(exc)``)."""
+        zero = (
+            f" ({self.zero_cards} of them stored with zero photo cards)"
+            if self.zero_cards
+            else ""
+        )
+        return (
+            f"{self.missing} of {self.labels} labels lack whole-photo features{zero}; "
+            f"run {BACKFILL_PHOTO_FEATURES_COMMAND}"
+        )
+
+    def __str__(self) -> str:
+        return self.reason
+
+
+def _whole_photo_contract() -> tuple[str, int]:
+    """``(WHOLE_PHOTO_FEATURE_VERSION, WHOLE_PHOTO_DIMS)``, imported lazily.
+
+    The vision layer owns the constants; importing it only when the whole-photo feature set is
+    in use keeps the default path's import surface unchanged.
+    """
+    from ..vision.photo_cards import WHOLE_PHOTO_DIMS, WHOLE_PHOTO_FEATURE_VERSION
+
+    return WHOLE_PHOTO_FEATURE_VERSION, WHOLE_PHOTO_DIMS
+
+
+def _whole_photo_label_rows(store) -> list:
+    """``(liked, face_crop_v1 ++ whole_photo, source)`` for every label, or a raise.
+
+    A label with no row at all, or whose winning row records ZERO photo cards
+    (``has_photo_row`` True, vector None), is counted, and any such label raises
+    :class:`FeatureSetIncomplete`.  Zero photo cards is an extraction failure, never a feature:
+    there is no zero block (``RankerDecider`` refuses to score one too).
+    """
+    loader = getattr(store, "load_label_feature_rows", None)
+    if not callable(loader):
+        raise ValueError(
+            f"ranker feature set {FEATURE_SET_FACE_CROP_WHOLE_PHOTO_V1!r} needs a store "
+            f"with load_label_feature_rows ({type(store).__name__} has none)"
+        )
+    version, dims = _whole_photo_contract()
+    rows = loader(version)
+    out = []
+    missing = zero_cards = 0
+    for ordinal, row in enumerate(rows):
+        if not isinstance(row, (list, tuple)) or len(row) != 5:
+            raise ValueError(
+                f"label feature row {ordinal} must be a (liked, embedding, source, "
+                "photo_vector, has_photo_row) 5-tuple"
+            )
+        liked, embedding, source, photo, has_row = row
+        if type(has_row) is not bool:
+            raise ValueError(
+                f"label feature row {ordinal} has_photo_row must be a bool"
+            )
+        if not has_row:
+            if photo is not None:
+                raise ValueError(
+                    f"label feature row {ordinal} has a photo vector but no photo row"
+                )
+            missing += 1
+            continue
+        if photo is None:
+            missing += 1
+            zero_cards += 1
+            continue
+        block = list(photo)
+        if len(block) != dims:
+            raise ValueError(
+                f"label feature row {ordinal} photo vector has dimension "
+                f"{len(block)}; expected {dims}"
+            )
+        out.append((liked, [*embedding, *block], source))
+    if missing:
+        raise FeatureSetIncomplete(
+            missing=missing, labels=len(rows), zero_cards=zero_cards
+        )
+    return out
+
+
+def fetch_label_rows(store, feature_set: str = FEATURE_SET_FACE_CROP_V1) -> list:
+    """The store's labels for ``PreferenceModel.train``, in the configured feature set.
+
+    ``face_crop_v1`` (the default): ``load_label_rows()`` (``(liked, embedding, source)``
+    triples) when the store has it, else ``load_labels()`` (``(liked, embedding)`` pairs --
+    every pair is a manual calibration label).  Duck-typed on purpose: test doubles and older
+    stores implement only part of the surface.  Nothing else is read.
+
+    ``face_crop_whole_photo_v1``: the same labels in the same order, each embedding the v1
+    vector followed by its ``WHOLE_PHOTO_DIMS`` whole-photo vector (see
+    :func:`_whole_photo_label_rows`); raises :class:`FeatureSetIncomplete` when any label lacks
+    a usable ``photo_features`` row.
+    """
+    if require_feature_set(feature_set) == FEATURE_SET_FACE_CROP_V1:
+        loader = getattr(store, "load_label_rows", None)
+        return loader() if callable(loader) else store.load_labels()
+    return _whole_photo_label_rows(store)
 
 
 def fetch_training_inputs(
-    store, *, log: Callable[[str], None] = print
+    store,
+    feature_set: str = FEATURE_SET_FACE_CROP_V1,
+    *,
+    log: Callable[[str], None] = print,
 ) -> tuple[list, dict | None]:
     """Everything ``PreferenceModel.train`` needs from a store: (rows, live_review).
 
-    Live review stats are an ADD-ON: a store without ``auto_review_stats`` yields ``None``
-    silently, and an exception there is logged loudly and treated as ``None`` -- reviews must
-    never block a run.
+    ``feature_set`` is :func:`fetch_label_rows`' (a :class:`FeatureSetIncomplete` propagates,
+    before any review stats are read).  Live review stats are an ADD-ON: a store without
+    ``auto_review_stats`` yields ``None`` silently, and an exception there is logged loudly and
+    treated as ``None`` -- reviews must never block a run.
     """
-    return fetch_label_rows(store), fetch_live_review(store, log=log)
+    return fetch_label_rows(store, feature_set), fetch_live_review(store, log=log)
 
 
 def fetch_live_review(store, *, log: Callable[[str], None] = print) -> dict | None:

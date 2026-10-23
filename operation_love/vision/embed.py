@@ -14,9 +14,53 @@ from __future__ import annotations
 
 import math
 import threading
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 from ..device import best_device
 from ..perception.capture import Profile
+from .photo_cards import (
+    CLIP_MEAN_RGB,
+    WHOLE_PHOTO_DIMS,
+    WHOLE_PHOTO_FEATURE_VERSION,
+    NoPhotoCards,
+    extract_photo_cards,
+)
+
+# CLIP_MEAN_RGB (photo_cards) pads each card to a square: it becomes ~0 after the preprocess's
+# Normalize, so the padding carries no signal of its own (the like-button mask uses it too).
+_WHOLE_PHOTO_BATCH = 16
+
+
+@dataclass(frozen=True)
+class WholePhotoEmbedding:
+    """The whole-photo feature of one profile.
+
+    `vector` is the L2-normalised GeM (p=3) pool of every unique photo card's L2 CLIP vector
+    (WHOLE_PHOTO_DIMS floats) and `card_count` (>= 1) the number of cards pooled; frames with no
+    photo card raise `NoPhotoCards` instead (see photo_cards' module docstring). `frames_sha256`
+    identifies the exact frame bytes (see `photo_cards.frames_sha256`). `band_cards` is
+    `PhotoCards.band_cards`, a diagnostic the backfill counts."""
+
+    vector: list[float]
+    card_count: int
+    frames_sha256: str
+    feature_version: str = WHOLE_PHOTO_FEATURE_VERSION
+    band_cards: tuple[str, ...] = ()
+
+
+def pad_to_square(rgb, fill: tuple[int, int, int] = CLIP_MEAN_RGB):
+    """Centre an (h, w, 3) uint8 RGB array on a square canvas of side max(h, w) filled with
+    `fill`, so CLIP's resize + centre crop sees the whole card and crops nothing. Pure."""
+    import numpy as np
+
+    h, w = rgb.shape[:2]
+    side = max(h, w)
+    canvas = np.empty((side, side, 3), np.uint8)
+    canvas[:] = fill
+    oy, ox = (side - h) // 2, (side - w) // 2
+    canvas[oy : oy + h, ox : ox + w] = rgb
+    return canvas
 
 
 def _finite_builtin_number(value: object) -> float | None:
@@ -614,3 +658,75 @@ class Embedder:
             )
             return None
         return vec
+
+    # --- whole photos ----------------------------------------------------
+    def embed_whole_photos(self, frames: Sequence[bytes]) -> WholePhotoEmbedding:
+        """The whole-photo feature of a profile's frames (`Profile.photos`, ALL of them, in
+        stored order: no quality filter).
+
+        Every unique photo card (`photo_cards.extract_photo_cards`) is padded to a square with
+        CLIP's mean colour, run through the SAME CLIP model and preprocess `embed_profile`
+        uses, and L2-normalised; the cards are GeM-pooled (p=3) and L2-normalised again. No
+        cosine dedup: the cards are already unique.
+
+        Fails loud, never partially: unreadable frames, frames holding no photo card
+        (`NoPhotoCards`: on Hinge that is an extraction failure, never a fact), a model error or
+        a non-finite or wrong-width vector raise (a pooled vector built from fewer cards than
+        the profile has, or none, would be a silent degradation). Thread-safe like the rest of
+        Embedder: the models load once under `_lock`, inference runs outside it as in
+        `embed_profile`."""
+        self._ensure()
+        try:
+            cards = extract_photo_cards(frames)
+            if not cards.cards:
+                raise NoPhotoCards(
+                    f"{len(frames)} frame(s) hold no photo card the extractor recognises"
+                    if frames
+                    else "no frames to cut photo cards from"
+                )
+            vectors = self._clip_whole_cards([card.pixels for card in cards.cards])
+        except Exception as exc:
+            print(f"Whole-photo embedding error: {type(exc).__name__}: {exc}")
+            raise
+        print(f"Whole photos: {len(frames)} frame(s) -> {len(vectors)} photo card(s)")
+        pooled = l2_normalize(gem_pool(vectors))
+        if len(pooled) != WHOLE_PHOTO_DIMS or not all(math.isfinite(x) for x in pooled):
+            raise ValueError(
+                f"whole-photo vector has {len(pooled)} dims or non-finite values; "
+                f"expected {WHOLE_PHOTO_DIMS} finite floats"
+            )
+        return WholePhotoEmbedding(
+            vector=pooled,
+            card_count=len(vectors),
+            frames_sha256=cards.frames_sha256,
+            band_cards=tuple(cards.band_cards),
+        )
+
+    def _clip_whole_cards(self, cards) -> list[list[float]]:
+        """L2 CLIP vector of each card (RGB uint8 array), padded to a square, in order."""
+        if not cards:
+            return []
+        import torch
+        from PIL import Image
+
+        out: list[list[float]] = []
+        for start in range(0, len(cards), _WHOLE_PHOTO_BATCH):
+            batch = torch.stack(
+                [
+                    self._clip_preprocess(Image.fromarray(pad_to_square(card)))
+                    for card in cards[start : start + _WHOLE_PHOTO_BATCH]
+                ]
+            ).to(self._device)
+            with torch.no_grad():
+                encoded = self._clip.encode_image(batch)
+                encoded = (encoded / encoded.norm(dim=-1, keepdim=True)).cpu().tolist()
+            out.extend([float(x) for x in row] for row in encoded)
+        for ordinal, vector in enumerate(out):
+            if len(vector) != WHOLE_PHOTO_DIMS or not all(
+                math.isfinite(x) for x in vector
+            ):
+                raise ValueError(
+                    f"card {ordinal}'s CLIP vector has {len(vector)} dims or non-finite "
+                    f"values; expected {WHOLE_PHOTO_DIMS} finite floats"
+                )
+        return out

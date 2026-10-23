@@ -42,6 +42,11 @@ from .opener.service import DECISION_NEVER_SENT, DECISION_SEND_UNVERIFIED
 from .ranker.decider import Decider, Decision
 from .ranker.profile_key import profile_key_from_identity
 from .ranker.store import require_auto_pass_retention
+from .ranker.threshold import (
+    DEFAULT_FEATURE_SET,
+    FEATURE_SET_FACE_CROP_WHOLE_PHOTO_V1,
+    FEATURE_SET_INCOMPLETE_KIND,
+)
 from .targeting_policy import (
     installed_still_photo_licence,
     still_photo_licence_operator_notice,
@@ -1482,6 +1487,27 @@ class Worker(threading.Thread):
                         raise RuntimeError(
                             "the training profile could not be embedded; no label was saved"
                         )
+                    # Whole-photo mode: the label's photo_features row is a required write.
+                    # It is computed here, with the other pure parts, so a failure stops
+                    # before any durable write, and written inside the flush boundary below.
+                    # In v1 mode nothing reads the row, so it is computed and written
+                    # best-effort only after the Hub action has completed
+                    # (_persist_v1_photo_features), where it can neither fail nor delay it.
+                    photo_required = self._whole_photo_required()
+                    whole_photo = None
+                    if photo_required:
+                        if not callable(
+                            getattr(self.store, "add_photo_features", None)
+                        ):
+                            raise RuntimeError(
+                                f"{type(self.store).__name__} has no add_photo_features, "
+                                "which ranker.feature_set="
+                                f"{FEATURE_SET_FACE_CROP_WHOLE_PHOTO_V1} requires; no label "
+                                "was saved"
+                            )
+                        whole_photo = self._compute_whole_photo(
+                            profile, required=True, context="Training"
+                        )
                     record_profile = self.store.record_profile
                     profile_kwargs = dict(
                         source="manual", photos=profile.photos, **metadata
@@ -1590,6 +1616,16 @@ class Worker(threading.Thread):
                         profile_name=profile.name,
                         **metadata,
                     )
+                    if whole_photo is not None:
+                        self._write_photo_features(
+                            profile_id=profile_id,
+                            feature_version=whole_photo.feature_version,
+                            embedding=whole_photo.vector,
+                            card_count=whole_photo.card_count,
+                            frames_sha256=whole_photo.frames_sha256,
+                            required=True,
+                            context="Training",
+                        )
                     flush = getattr(self.store, "flush", None)
                     if not callable(flush):
                         raise RuntimeError(
@@ -1639,6 +1675,10 @@ class Worker(threading.Thread):
                     state="scoring",
                     detail=f"{outcome.title()} recorded and saved; pacing before the next profile",
                 )
+                if not photo_required:
+                    self._persist_v1_photo_features(
+                        profile, profile_id=profile_id, context="Training"
+                    )
                 if labels_added % self.retrain_every == 0:
                     self._retrain_after_labels(labels_added)
                     last_retrained = labels_added
@@ -1892,6 +1932,26 @@ class Worker(threading.Thread):
                 if self.stop_event.is_set():
                     break
                 if d.decision == "defer":
+                    model = getattr(self.decider, "model", None)
+                    reason = getattr(model, "not_ready_reason", None)
+                    if (
+                        self._whole_photo_required()
+                        and getattr(model, "not_ready_kind", None)
+                        == FEATURE_SET_INCOMPLETE_KIND
+                        and reason
+                    ):
+                        # Labels lacking whole-photo rows are a backfill problem, not a
+                        # labelling one: more Training cannot fill the labels that predate the
+                        # switch.  The reason names the count and the command, and the stop
+                        # kind keeps every surface from calling this a cold start.
+                        self._stat(
+                            last_decision="defer",
+                            state="stopped",
+                            stop_reason=reason,
+                            stop_kind=FEATURE_SET_INCOMPLETE_KIND,
+                        )
+                        print(f"Ranker not ready: {reason}")
+                        break
                     self._stat(last_decision="defer", state="stopped")
                     print(
                         f"{self.app.title()} ranker not ready (cold-start) — run training "
@@ -2752,9 +2812,225 @@ class Worker(threading.Thread):
                 "not be offered for review."
             )
             return
+        self._archive_pass_photo_features(profile, decision, profile_id=profile_id)
         self._archived_since_prune += 1
         if self._archived_since_prune >= _AUTO_PRUNE_EVERY:
             self._prune_auto_passes()
+
+    # --- Whole-photo feature rows (``photo_features``) ---------------------------------------
+    def _whole_photo_required(self) -> bool:
+        """True when the ranker scores with the whole-photo feature, so its row is required.
+
+        Read from the decider that scores this run; a decider without ``feature_set`` is v1.
+        """
+        return (
+            getattr(self.decider, "feature_set", DEFAULT_FEATURE_SET)
+            == FEATURE_SET_FACE_CROP_WHOLE_PHOTO_V1
+        )
+
+    def _compute_whole_photo(self, profile, *, required: bool, context: str):
+        """The profile's ``WholePhotoEmbedding`` via the decider, or ``None`` (v1 mode only).
+
+        ``required`` (whole-photo mode): a missing capability or a failure raises.  Otherwise a
+        failure is a loud WARNING and ``None`` -- the v1 label or archive is kept and the
+        backfill can fill the row later.  Frames with no photo card (``NoPhotoCards``) are such
+        a failure: no row is written, so the label stays missing and the backfill reports it.
+        A decider without ``embed_whole_photos`` (test doubles, legacy deciders) computes
+        nothing in v1 mode.
+        """
+        embed = getattr(self.decider, "embed_whole_photos", None)
+        if not callable(embed):
+            if required:
+                raise RuntimeError(
+                    f"{type(self.decider).__name__} cannot compute whole-photo features, "
+                    f"which ranker.feature_set={FEATURE_SET_FACE_CROP_WHOLE_PHOTO_V1} requires"
+                )
+            return None
+        try:
+            return embed(profile)
+        except Exception as exc:
+            if required:
+                raise
+            print(
+                f"WARNING: {self.app.title()} {context}: computing this profile's whole-photo "
+                f"features FAILED ({type(exc).__name__}: {exc}); the v1 data is kept and "
+                "`python -m tools.backfill_photo_features` can fill the row later."
+            )
+            return None
+
+    def _write_photo_features(
+        self,
+        *,
+        profile_id: str,
+        feature_version: str,
+        embedding,
+        card_count: int,
+        frames_sha256: str,
+        required: bool,
+        context: str,
+    ) -> bool:
+        """``store.add_photo_features(..., source="live")``; True when the row was written.
+
+        ``required`` (whole-photo mode): the buffered write inside the caller's flush boundary;
+        a store without the method, a raise, or any result but True raises.  Otherwise the row
+        goes through ``best_effort=True`` (written at once, never buffered, so a rejected row
+        cannot fail a later flush or the shutdown close of rows that matter), and a store
+        without the method or the keyword, a raise, or any result but True is a loud WARNING
+        and False.
+        """
+        add = getattr(self.store, "add_photo_features", None)
+        if not callable(add):
+            message = (
+                f"{type(self.store).__name__} has no add_photo_features; whole-photo "
+                "features cannot be saved"
+            )
+            if required:
+                raise RuntimeError(message)
+            print(f"WARNING: {self.app.title()} {context}: {message}.")
+            return False
+        extra = {}
+        if not required:
+            if not _accepts_keywords(add, "best_effort"):
+                self._warn_no_best_effort_photo_row(context)
+                return False
+            extra["best_effort"] = True
+        try:
+            written = add(
+                run_id=self.run_id,
+                app=self.app,
+                profile_id=profile_id,
+                feature_version=feature_version,
+                embedding=list(embedding) if embedding is not None else None,
+                card_count=int(card_count),
+                frames_sha256=str(frames_sha256),
+                source="live",
+                **extra,
+            )
+        except Exception as exc:
+            if required:
+                raise
+            print(
+                f"WARNING: {self.app.title()} {context}: saving this profile's whole-photo "
+                f"features FAILED ({type(exc).__name__}: {exc}); the v1 data is kept and "
+                "`python -m tools.backfill_photo_features` can fill the row later."
+            )
+            return False
+        if written is not True:
+            if required:
+                raise RuntimeError(
+                    f"the whole-photo features could not be saved "
+                    f"(add_photo_features returned {written!r})"
+                )
+            print(
+                f"WARNING: {self.app.title()} {context}: the store did not save this profile's "
+                f"whole-photo features (add_photo_features returned {written!r}); the v1 data "
+                "is kept and `python -m tools.backfill_photo_features` can fill the row later."
+            )
+            return False
+        return True
+
+    def _warn_no_best_effort_photo_row(self, context: str) -> None:
+        print(
+            f"WARNING: {self.app.title()} {context}: "
+            f"{type(self.store).__name__}.add_photo_features cannot write a best-effort row, "
+            "so this profile's whole-photo features were not saved (a buffered row could fail "
+            "a later flush); `python -m tools.backfill_photo_features` can fill the row later."
+        )
+
+    def _photo_store_takes_best_effort(self, context: str) -> bool:
+        """Whether the store can take a best-effort ``photo_features`` row (v1-mode writes).
+
+        False, silently, for a store with no ``add_photo_features`` (it cannot hold the row);
+        False with a loud WARNING for one whose method has no ``best_effort`` keyword.  Checked
+        before computing, so no latency is spent on a row that would not be written.
+        """
+        add = getattr(self.store, "add_photo_features", None)
+        if not callable(add):
+            return False
+        if not _accepts_keywords(add, "best_effort"):
+            self._warn_no_best_effort_photo_row(context)
+            return False
+        return True
+
+    def _persist_v1_photo_features(
+        self, profile, *, profile_id: str, context: str
+    ) -> None:
+        """face_crop_v1 mode: compute and write the profile's ``photo_features`` row best-effort.
+
+        Nothing reads the row in this mode, so Training calls this only after the action it
+        belongs to has completed and is durable: it can neither fail the Hub action nor delay
+        it.  Written with ``best_effort=True`` and never raises; a missing row is printed loudly
+        and the backfill fills it later.  A store that cannot take the row computes nothing
+        (see ``_photo_store_takes_best_effort``).
+        """
+        try:
+            if not self._photo_store_takes_best_effort(context):
+                return
+            whole = self._compute_whole_photo(profile, required=False, context=context)
+            if whole is None:
+                return
+            self._write_photo_features(
+                profile_id=profile_id,
+                feature_version=whole.feature_version,
+                embedding=whole.vector,
+                card_count=whole.card_count,
+                frames_sha256=whole.frames_sha256,
+                required=False,
+                context=context,
+            )
+        except Exception as exc:  # noqa: BLE001 -- best-effort in v1 mode by contract
+            print(
+                f"WARNING: {self.app.title()} {context}: saving this profile's whole-photo "
+                f"features FAILED ({type(exc).__name__}: {exc}); the v1 data is kept and "
+                "`python -m tools.backfill_photo_features` can fill the row later."
+            )
+
+    def _archive_pass_photo_features(
+        self, profile, decision: Decision, *, profile_id: str
+    ) -> None:
+        """The archived pass's ``photo_features`` row, keyed by the pass's ``profile_id``.
+
+        An answer to the pass becomes a label with that same profile_id, so this row is the one
+        the whole-photo label loader joins it to.  Uses the vector decide() already computed
+        (whole-photo mode) and otherwise computes it here, synchronously before the post-pass
+        pause (ops/RUNBOOK.md: ~2-3 s per archived pass).  Written best-effort in every mode
+        and never raises, like the archive it belongs to: a missing row is printed loudly and
+        the backfill fills it from ``auto_pass_photos`` while the pass is retained.
+        """
+        context = "auto pass review"
+        try:
+            if getattr(decision, "frames_sha256", ""):
+                from .vision.photo_cards import WHOLE_PHOTO_FEATURE_VERSION
+
+                fields = {
+                    "feature_version": WHOLE_PHOTO_FEATURE_VERSION,
+                    "embedding": decision.photo_embedding,
+                    "card_count": decision.photo_card_count,
+                    "frames_sha256": decision.frames_sha256,
+                }
+            else:
+                if not self._photo_store_takes_best_effort(context):
+                    return
+                whole = self._compute_whole_photo(
+                    profile, required=False, context=context
+                )
+                if whole is None:
+                    return
+                fields = {
+                    "feature_version": whole.feature_version,
+                    "embedding": whole.vector,
+                    "card_count": whole.card_count,
+                    "frames_sha256": whole.frames_sha256,
+                }
+            self._write_photo_features(
+                profile_id=profile_id, required=False, context=context, **fields
+            )
+        except Exception as exc:  # noqa: BLE001 -- the review archive must never stop a run
+            print(
+                f"WARNING: {self.app.title()} {context}: saving this pass's whole-photo "
+                f"features FAILED ({type(exc).__name__}: {exc}); the run continues and "
+                "`python -m tools.backfill_photo_features` can fill the row later."
+            )
 
     def _prune_auto_passes(self) -> None:
         """Apply the archive's retention bounds (count and age); never raises.

@@ -1213,6 +1213,10 @@ function renderRunStatus(snap){
     if(state === 'blocked' && a.stop_kind === 'cold_relaunch_recovery')
       return box('idle', `${a.app}: stopped — could not recover after the app relaunched`, a.stop_reason);
     if(state === 'blocked') return box('idle', `${a.app}: stopped — deck blocked`, a.stop_reason);
+    // Before the cold-start branch: this stop also carries last_decision 'defer', but more
+    // Training cannot fix it. stop_reason names the missing count and the backfill command.
+    if(state === 'stopped' && a.stop_kind === 'feature_set_incomplete')
+      return box('idle', `${a.app}: stopped — whole-photo features missing`, a.stop_reason);
     if(state === 'stopped' && a.last_decision === 'defer')
       return box('idle', `${a.app}: stopped — ranker not ready (cold-start)`, 'run training mode first');
     if(state === 'stopped' && a.stop_kind === 'targeting_calibration')
@@ -1347,6 +1351,15 @@ function renderEval(e){
     const remaining = Number(r.remaining) || 1;   // defend a malformed local response only
     return `<div class="muted" style="margin-top:10px">Updates after ${remaining} more training label${remaining===1?'':'s'}.</div>`;
   };
+  // Labels lacking whole-photo rows: a backfill fixes this, more Training does not.
+  if(e.status === 'incomplete_features'){
+    setBadge('BACKFILL NEEDED', 'not-ready');
+    $('#evalbody').style.color = '#9a9aa2';
+    $('#evalbody').innerHTML = `<div class="readiness-title">Whole-photo features missing</div>`
+      + `<div class="readiness-copy">${esc(e.message || 'Run python -m tools.backfill_photo_features.')}</div>`
+      + refreshHtml();
+    return;
+  }
   if(e.status !== 'ok'){
     setBadge('KEEP TRAINING', 'learning');
     $('#evalbody').style.color = '#9a9aa2';

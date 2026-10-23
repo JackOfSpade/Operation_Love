@@ -147,6 +147,9 @@ _STOP_KINDS = frozenset(
         "targeting",
         "targeting_calibration",
         "cold_relaunch_recovery",
+        # ranker.feature_set face_crop_whole_photo_v1 with labels lacking whole-photo rows:
+        # stop_reason names the count and the backfill command (not a cold start).
+        "feature_set_incomplete",
     }
 )
 

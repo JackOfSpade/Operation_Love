@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import numbers
+import re
 import sqlite3
 import threading
 import time
@@ -349,6 +350,280 @@ def photo_content_type(data: bytes) -> str:
     return "application/octet-stream"
 
 
+# --- whole-photo features ----------------------------------------------------------------------
+# `photo_features` holds one profile's whole-photo vector (vision/photo_cards.py) keyed by
+# (app, profile_id, feature_version), written live at Training/AUTO-archive time or by
+# tools/backfill_photo_features.py from the archived frames.  Append-only: the row with the
+# latest created_at wins.  `labels.embedding` keeps the face-crop vector in every mode; nothing
+# here is read unless `ranker.feature_set` asks for the whole-photo feature set.  Both backends
+# share the validation and the read-side reductions below so they cannot disagree.  Zero photo
+# cards is an extraction failure (photo_cards.NoPhotoCards), so no zero-card row is written; one
+# stored by an earlier build still reads back as `has_photo_row` with no vector, which the label
+# loader counts as incomplete and the backfill's work list re-lists.
+PHOTO_FEATURE_SOURCES = ("live", "backfill")
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def _whole_photo_contract() -> tuple[str, int]:
+    """``(WHOLE_PHOTO_FEATURE_VERSION, WHOLE_PHOTO_DIMS)``; lazy so the store imports light."""
+    from ..vision.photo_cards import WHOLE_PHOTO_DIMS, WHOLE_PHOTO_FEATURE_VERSION
+
+    return WHOLE_PHOTO_FEATURE_VERSION, WHOLE_PHOTO_DIMS
+
+
+def require_photo_feature_version(feature_version: object) -> str:
+    """The feature version, when it is one this code can read and write; ValueError otherwise.
+
+    A typo'd version would otherwise write rows nothing ever reads, or read none and report
+    every label as missing its features.
+    """
+    version, _dims = _whole_photo_contract()
+    if feature_version != version:
+        raise ValueError(
+            f"photo features feature_version must be {version!r} (got {feature_version!r})"
+        )
+    return version
+
+
+def validate_photo_features(
+    *,
+    run_id: object,
+    app: object,
+    profile_id: object,
+    feature_version: object,
+    embedding: object,
+    card_count: object,
+    frames_sha256: object,
+    source: object,
+) -> dict:
+    """Validate and normalise one ``photo_features`` row; raises ValueError.
+
+    ``embedding`` must hold ``WHOLE_PHOTO_DIMS`` finite numbers and ``card_count`` be at least
+    1: a profile with no photo cards is an extraction failure, never a row to record.
+    ``app``/``profile_id`` are the join key to ``labels`` and must be non-empty; ``run_id`` is
+    provenance and may be "".
+    """
+    version = require_photo_feature_version(feature_version)
+    _version, dims = _whole_photo_contract()
+    if not isinstance(run_id, str):
+        raise ValueError(f"photo features run_id must be a string (got {run_id!r})")
+    for name, value in (("app", app), ("profile_id", profile_id)):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"photo features {name} must be a non-empty string (got {value!r})"
+            )
+    if type(card_count) is not int or card_count < 1:
+        raise ValueError(
+            "photo features card_count must be a positive integer; zero photo cards is an "
+            f"extraction failure, never a row (got {card_count!r})"
+        )
+    if (
+        embedding is None
+        or isinstance(embedding, (str, bytes))
+        or not hasattr(embedding, "__iter__")
+    ):
+        raise ValueError(
+            f"photo features embedding must be a number sequence (got {embedding!r:.40})"
+        )
+    vector: list[float] = []
+    for value in embedding:
+        try:
+            number = (
+                math.nan
+                if isinstance(value, bool) or not isinstance(value, numbers.Real)
+                else float(value)
+            )
+        except (OverflowError, ValueError):
+            number = math.nan
+        if not math.isfinite(number):
+            raise ValueError(
+                f"photo features embedding elements must be finite numbers (got {value!r})"
+            )
+        vector.append(number)
+    if len(vector) != dims:
+        raise ValueError(
+            f"photo features embedding must have {dims} dimensions (got {len(vector)})"
+        )
+    if not isinstance(frames_sha256, str) or not _SHA256_HEX.fullmatch(frames_sha256):
+        raise ValueError(
+            "photo features frames_sha256 must be 64 lowercase hex characters "
+            f"(got {frames_sha256!r})"
+        )
+    if source not in PHOTO_FEATURE_SOURCES:
+        raise ValueError(
+            f"photo features source must be one of {PHOTO_FEATURE_SOURCES!r} (got {source!r})"
+        )
+    return {
+        "run_id": run_id,
+        "app": app,
+        "profile_id": profile_id,
+        "feature_version": version,
+        "embedding": vector,
+        "card_count": card_count,
+        "frames_sha256": frames_sha256,
+        "source": source,
+    }
+
+
+def stored_photo_vector(
+    embedding: object, card_count: object, where: str
+) -> list[float] | None:
+    """A stored row's vector: None for a zero-card row, else the floats.
+
+    No zero-card row is written any more (``validate_photo_features``); one an earlier build
+    stored (an empty array, as BigQuery ARRAYs cannot be NULL, or a NULL) reads back as None,
+    which the label loader counts as incomplete.  A row whose vector and card count disagree
+    is corrupt and raises rather than being guessed at.
+    """
+    vector = [] if embedding is None else [float(x) for x in embedding]  # type: ignore[union-attr]
+    count = int(card_count) if card_count is not None else -1
+    if count < 0 or (count == 0) != (not vector):
+        raise ValueError(
+            f"photo_features row for {where} is corrupt: card_count={card_count!r} with a "
+            f"{len(vector)}-element vector"
+        )
+    return vector or None
+
+
+def join_label_features(
+    rows: list[tuple[bool, list[float], str]],
+    keys: list[tuple[str, str]],
+    features: dict[tuple[str, str], list[float] | None],
+) -> list[tuple[bool, list[float], str, list[float] | None, bool]]:
+    """``rows`` (load_label_rows' triples) + each one's (photo_vector_or_None, has_photo_row).
+
+    ``keys`` holds each row's (app, profile_id) in the same order.  A label with no
+    profile_id can never be matched (add_photo_features refuses an empty one).
+    """
+    if len(rows) != len(keys):
+        raise RuntimeError("label rows and their identities are out of step")
+    out = []
+    for (liked, embedding, source), key in zip(rows, keys, strict=True):
+        found = bool(key[1]) and key in features
+        vector = features[key] if found else None
+        out.append(
+            (
+                liked,
+                embedding,
+                source,
+                None if vector is None else list(vector),
+                found,
+            )
+        )
+    return out
+
+
+def photo_feature_coverage_of(
+    rows: list[tuple[bool, list[float], str, list[float] | None, bool]],
+) -> dict:
+    """``{"labels","with_features","missing","zero_cards"}`` of load_label_feature_rows output.
+
+    ``labels == with_features + missing``; ``zero_cards`` (a stored row recording no photo
+    cards, which the label loader counts as incomplete) is part of ``with_features``.
+    """
+    with_features = sum(1 for row in rows if row[4])
+    return {
+        "labels": len(rows),
+        "with_features": with_features,
+        "missing": len(rows) - with_features,
+        "zero_cards": sum(1 for row in rows if row[4] and row[3] is None),
+    }
+
+
+def resolve_label_frames(
+    photo_rows: list[tuple[float, int, str, str]],
+) -> tuple[list[str], list[str]]:
+    """``(frame_uris, frame_sha256s)`` in photo_index order from one label's photo rows.
+
+    ``photo_rows`` are ``(created_at epoch, photo_index, gcs_uri, sha256)``; one archive call
+    stamps every row of its set with one created_at.  Both lists come back EMPTY -- "this
+    store cannot supply the frames", which the backfill reports as a failure -- when there are
+    no rows, an index set is not exactly 0..n-1, a row has no object URI or no valid sha256,
+    one index carries two different photos, or two archived sets disagree about the frames.
+    Never a partial or guessed set: the whole-photo vector is a function of ALL frames in order.
+    """
+    sets: dict[float, dict[int, tuple[str, str]]] = {}
+    for created, index, uri, sha in photo_rows:
+        if type(index) is not int:
+            return [], []
+        frame = (str(uri or ""), str(sha or ""))
+        archived = sets.setdefault(created, {})
+        if archived.get(index, frame) != frame:
+            return [], []
+        archived[index] = frame
+    sequences = []
+    for created in sorted(sets):
+        archived = sets[created]
+        if sorted(archived) != list(range(len(archived))):
+            return [], []
+        sequence = [archived[i] for i in range(len(archived))]
+        if any(not uri or not _SHA256_HEX.fullmatch(sha) for uri, sha in sequence):
+            return [], []
+        sequences.append(sequence)
+    if not sequences:
+        return [], []
+    latest = sequences[-1]
+    if any([s for _u, s in seq] != [s for _u, s in latest] for seq in sequences):
+        return [], []
+    return [uri for uri, _sha in latest], [sha for _uri, sha in latest]
+
+
+def has_usable_photo_row(
+    features: dict[tuple[str, str], list[float] | None], key: tuple[str, str]
+) -> bool:
+    """Whether ``key``'s winning row holds a vector (a zero-card row does not)."""
+    return features.get(key) is not None
+
+
+def missing_photo_feature_entries(
+    labels: list[dict],
+    features: dict[tuple[str, str], list[float] | None],
+    manual_frames: dict[tuple[str, str, str], list[tuple[float, int, str, str]]],
+    review_frames: dict[tuple[str, str, str], list[tuple[float, int, str, str]]],
+) -> list[dict]:
+    """The backfill's work list: one entry per non-retracted label lacking a usable row.
+
+    ``labels`` are ``{"run_id","app","profile_id","source"}`` dicts in label order.  A label
+    lacks a usable row when it has none or its winning row records zero photo cards
+    (``has_usable_photo_row``).  Frames come from ``manual_frames`` (profile_photos) or, for an
+    ``auto_review*`` label, ``review_frames`` (auto_pass_photos), keyed by (run_id, app,
+    profile_id).  Labels sharing one (app, profile_id) share one row, so only the first is
+    listed; a label with no profile_id can never get a row and is listed on its own, with no
+    frames.
+    """
+    out = []
+    listed: set[tuple[str, str]] = set()
+    for label in labels:
+        run_id = str(label.get("run_id") or "")
+        app = str(label.get("app") or "")
+        profile_id = str(label.get("profile_id") or "")
+        source = str(label.get("source") or "")
+        key = (app, profile_id)
+        if profile_id:
+            if has_usable_photo_row(features, key) or key in listed:
+                continue
+            listed.add(key)
+            frames = (
+                review_frames
+                if source.startswith(AUTO_REVIEW_SOURCE_PREFIX)
+                else manual_frames
+            )
+            uris, shas = resolve_label_frames(frames.get((run_id, app, profile_id), []))
+        else:
+            uris, shas = [], []
+        out.append(
+            {
+                "run_id": run_id,
+                "app": app,
+                "profile_id": profile_id,
+                "source": source,
+                "frame_uris": uris,
+                "frame_sha256s": shas,
+            }
+        )
+    return out
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS labels (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
@@ -422,6 +697,18 @@ CREATE TABLE IF NOT EXISTS auto_pass_reviews (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS auto_pass_reviews_identity
     ON auto_pass_reviews (app, profile_id);
+-- Whole-photo features (see the "whole-photo features" helpers above). Brand-new table:
+-- CREATE ... IF NOT EXISTS alone reaches an existing db file. Append-only; for one (app,
+-- profile_id, feature_version) the latest created_at wins (then the latest id). No zero-card
+-- row is written; one an earlier build stored has card_count 0 and an empty embedding array.
+CREATE TABLE IF NOT EXISTS photo_features (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, app TEXT NOT NULL,
+    profile_id TEXT NOT NULL, created_at REAL NOT NULL, feature_version TEXT NOT NULL,
+    embedding TEXT NOT NULL, card_count INTEGER NOT NULL, frames_sha256 TEXT NOT NULL,
+    source TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS photo_features_identity
+    ON photo_features (feature_version, app, profile_id);
 CREATE TABLE IF NOT EXISTS spend (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, created_at REAL, model TEXT,
     input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
@@ -624,6 +911,155 @@ class SQLiteStore:
             (bool(liked), json.loads(emb), str(source or ""))
             for liked, emb, source in rows
         ]
+
+    # --- whole-photo features -------------------------------------------------------------
+    def add_photo_features(
+        self,
+        *,
+        run_id,
+        app,
+        profile_id,
+        feature_version,
+        embedding,
+        card_count,
+        frames_sha256,
+        source,
+        best_effort=False,
+    ) -> bool:
+        """Append one profile's whole-photo feature row; True once committed.
+
+        See ``validate_photo_features`` for what is accepted (ValueError otherwise, in either
+        mode).  The table is append-only and a later row for the same (app, profile_id,
+        feature_version) wins.  Every row commits at once on this backend; ``best_effort``
+        (face_crop_v1 mode, where nothing reads the row) turns a database error into a loud
+        WARNING and False instead of a raise.
+        """
+        row = validate_photo_features(
+            run_id=run_id,
+            app=app,
+            profile_id=profile_id,
+            feature_version=feature_version,
+            embedding=embedding,
+            card_count=card_count,
+            frames_sha256=frames_sha256,
+            source=source,
+        )
+        with self._lock:
+            try:
+                self.con.execute(
+                    "INSERT INTO photo_features (run_id, app, profile_id, created_at,"
+                    " feature_version, embedding, card_count, frames_sha256, source)"
+                    " VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        row["run_id"],
+                        row["app"],
+                        row["profile_id"],
+                        time.time(),
+                        row["feature_version"],
+                        json.dumps(row["embedding"], allow_nan=False),
+                        row["card_count"],
+                        row["frames_sha256"],
+                        row["source"],
+                    ),
+                )
+                self._commit()
+            except sqlite3.Error as exc:
+                if not best_effort:
+                    raise
+                try:
+                    self.con.rollback()
+                except sqlite3.Error:
+                    pass
+                print(
+                    "WARNING: SQLite store: the best-effort photo_features row for "
+                    f"{row['app']}/{row['profile_id']} was NOT saved "
+                    f"({type(exc).__name__}: {exc})"
+                )
+                return False
+        return True
+
+    def _latest_photo_features_locked(
+        self, version: str
+    ) -> dict[tuple[str, str], list[float] | None]:
+        """(app, profile_id) -> the winning row's vector (None = zero cards). Caller holds lock."""
+        features: dict[tuple[str, str], list[float] | None] = {}
+        for app, profile_id, embedding, card_count in self.con.execute(
+            "SELECT app, profile_id, embedding, card_count FROM photo_features"
+            " WHERE feature_version=? ORDER BY created_at, id",
+            (version,),
+        ).fetchall():
+            features[(str(app), str(profile_id))] = stored_photo_vector(
+                None if embedding is None else json.loads(embedding),
+                card_count,
+                f"{app}/{profile_id}",
+            )
+        return features
+
+    def load_label_feature_rows(
+        self, feature_version: str
+    ) -> list[tuple[bool, list[float], str, list[float] | None, bool]]:
+        """Exactly load_label_rows()' rows, in its order, plus (photo_vector, has_photo_row).
+
+        The same SELECT as load_label_rows with the label's identity added (same table scan,
+        same retraction filter), matched to the winning ``photo_features`` row of
+        ``feature_version`` by (app, profile_id).  ``has_photo_row`` False means no row exists;
+        True with a None vector is a zero-card row an earlier build stored.
+        """
+        version = require_photo_feature_version(feature_version)
+        with self._lock:
+            labels = self.con.execute(
+                "SELECT l.liked, l.embedding, l.source, l.app, l.profile_id FROM labels l "
+                f"WHERE {_LABEL_NOT_RETRACTED}"
+            ).fetchall()
+            features = self._latest_photo_features_locked(version)
+        return join_label_features(
+            [
+                (bool(liked), json.loads(emb), str(source or ""))
+                for liked, emb, source, _app, _profile_id in labels
+            ],
+            [
+                (str(app or ""), str(profile_id or ""))
+                for _liked, _emb, _source, app, profile_id in labels
+            ],
+            features,
+        )
+
+    def photo_feature_coverage(self, feature_version: str) -> dict:
+        """``{"labels","with_features","missing","zero_cards"}`` (see photo_feature_coverage_of)."""
+        return photo_feature_coverage_of(self.load_label_feature_rows(feature_version))
+
+    def labels_missing_photo_features(self, feature_version: str) -> list[dict]:
+        """The backfill's work list (see ``missing_photo_feature_entries``).
+
+        This backend archives no profile photos (record_profile stores nothing) and keeps an
+        AUTO pass's screenshots as row BLOBs with no object URI, so every entry here has EMPTY
+        frame lists: the frames a backfill needs live only in BigQuery's GCS archive.
+        """
+        version = require_photo_feature_version(feature_version)
+        with self._lock:
+            labels = self.con.execute(
+                "SELECT l.run_id, l.app, l.profile_id, l.source FROM labels l "
+                f"WHERE {_LABEL_NOT_RETRACTED} ORDER BY l.created_at, l.id"
+            ).fetchall()
+            features = self._latest_photo_features_locked(version)
+            review_rows = self.con.execute(
+                "SELECT run_id, app, profile_id, created_at, photo_index, gcs_uri, sha256"
+                " FROM auto_pass_photos ORDER BY id"
+            ).fetchall()
+        review_frames: dict[tuple[str, str, str], list] = {}
+        for run_id, app, profile_id, created, index, uri, sha in review_rows:
+            review_frames.setdefault(
+                (str(run_id or ""), str(app or ""), str(profile_id or "")), []
+            ).append((float(created), index, uri, sha))
+        return missing_photo_feature_entries(
+            [
+                {"run_id": r, "app": a, "profile_id": p, "source": s}
+                for r, a, p, s in labels
+            ],
+            features,
+            {},
+            review_frames,
+        )
 
     def _visible_openers_count(self, run_id: str, app: str) -> int:
         """Count non-tombstoned openers, retaining compatibility with old test/local schemas."""

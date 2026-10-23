@@ -17,6 +17,13 @@ import time
 from .. import config as cfg_mod
 from .. import platforms
 from .. import supervisor
+from ..ranker.decider import format_photo_coverage, mark_feature_set_incomplete
+from ..ranker.threshold import (
+    DEFAULT_FEATURE_SET,
+    FeatureSetIncomplete,
+    fetch_label_rows,
+    require_feature_set,
+)
 from ..training_actions import TrainingActionBridge
 
 # Chrome (and others) throttle setInterval in a hidden tab to ~once/minute after 5min hidden —
@@ -1185,10 +1192,16 @@ class HubState:
 
             cfg = cfg_mod.load(self.config_path)
             ranker_cfg = cfg.ranker
+            feature_set = require_feature_set(
+                getattr(ranker_cfg, "feature_set", DEFAULT_FEATURE_SET)
+            )
 
             def work(store):
-                rows_fn = getattr(store, "load_label_rows", None)
-                rows = rows_fn() if callable(rows_fn) else store.load_labels()
+                if feature_set == DEFAULT_FEATURE_SET:
+                    rows_fn = getattr(store, "load_label_rows", None)
+                    rows = rows_fn() if callable(rows_fn) else store.load_labels()
+                else:
+                    rows = fetch_label_rows(store, feature_set=feature_set)
                 stats_fn = getattr(store, "auto_review_stats", None)
                 live_review = None
                 if callable(stats_fn):
@@ -1201,7 +1214,13 @@ class HubState:
                         )
                 return rows, live_review
 
-            rows, live_review = self._with_review_store(work)
+            # Labels lacking whole-photo rows leave the model NOT READY (the reason names the
+            # count and the backfill command), exactly as a run would.
+            incomplete = None
+            try:
+                rows, live_review = self._with_review_store(work)
+            except FeatureSetIncomplete as exc:
+                rows, live_review, incomplete = None, None, exc
             recall_target = getattr(ranker_cfg, "like_recall_target", None)
             model = PreferenceModel(
                 min_labels=ranker_cfg.min_labels_to_engage,
@@ -1212,7 +1231,10 @@ class HubState:
                     ranker_cfg, "contextual_recall_budget", 0.02
                 ),
             )
-            model.train(rows, live_review=live_review)
+            if incomplete is None:
+                model.train(rows, live_review=live_review)
+            else:
+                mark_feature_set_incomplete(model, incomplete)
             calibration = model.calibration
             if calibration is None:
                 error = (
@@ -1686,11 +1708,19 @@ class HubState:
             base, status, live_store = self._eval_labels, self._status, self._live_store
         live = getattr(status, "labels", None) if status is not None else None
         running = self.is_running()
+        # Set where a FeatureSetIncomplete is caught, while its store is still open to read the
+        # coverage line from; the except clause below turns it into the card's message.
+        incomplete_message: str | None = None
         try:
             from ..ranker import make_store
             from ..ranker.evaluate import evaluate
 
             cfg = cfg_mod.load(self.config_path)
+            feature_set = require_feature_set(
+                getattr(
+                    getattr(cfg, "ranker", None), "feature_set", DEFAULT_FEATURE_SET
+                )
+            )
             # FRESHNESS: when a run is live, read its in-memory store so the card sees
             # EVERY swipe (incl. the unflushed buffer) — not a re-query of BigQuery, which
             # only returns committed rows and lags behind the streaming buffer. When idle,
@@ -1698,7 +1728,12 @@ class HubState:
             samples = None
             if running and live_store is not None:
                 try:
-                    samples = self._eval_label_pairs(live_store)
+                    samples = self._eval_label_pairs(live_store, feature_set)
+                except FeatureSetIncomplete as exc:
+                    incomplete_message = self._feature_set_incomplete_message(
+                        exc, live_store
+                    )
+                    raise
                 except Exception:  # noqa: BLE001 — run ended + store closed mid-read; fall back
                     samples = None
             if samples is None:
@@ -1706,7 +1741,12 @@ class HubState:
                     cfg, ensure=False
                 )  # read-only; don't run DDL just to eval
                 try:
-                    samples = self._eval_label_pairs(store)
+                    samples = self._eval_label_pairs(store, feature_set)
+                except FeatureSetIncomplete as exc:
+                    incomplete_message = self._feature_set_incomplete_message(
+                        exc, store
+                    )
+                    raise
                 finally:
                     store.close()
                 live_store = None  # don't reuse a dead store for the chart
@@ -1755,9 +1795,16 @@ class HubState:
             # status.labels by the worker's unflushed buffer and re-fire the gate every poll.
             computed_at = live if live is not None else len(samples)
         except Exception as exc:  # noqa: BLE001
+            # Labels lacking whole-photo rows are the ranker's NOT READY state, not a fault:
+            # the card says how many and which command fills them.
+            incomplete = isinstance(exc, FeatureSetIncomplete)
             result = {
-                "status": "error",
-                "message": f"{type(exc).__name__}: {exc}",
+                "status": "incomplete_features" if incomplete else "error",
+                "message": (
+                    (incomplete_message or exc.reason)
+                    if incomplete
+                    else f"{type(exc).__name__}: {exc}"
+                ),
                 "labels": None,
                 "identities": None,
                 "folds": 0,
@@ -1898,7 +1945,7 @@ class HubState:
             return None
 
     @staticmethod
-    def _eval_label_pairs(store) -> list:
+    def _eval_label_pairs(store, feature_set: str = DEFAULT_FEATURE_SET) -> list:
         """The labels the model-quality card may judge the ranker on: MANUAL ones only.
 
         An answer to an archived AUTO pass (source ``auto_review...``) is a good training label
@@ -1906,17 +1953,42 @@ class HubState:
         PASSED, so scoring the model on them would count its own past misses as the whole
         population (and its correct passes as extra easy negatives).  Stores that predate the
         review archive have no ``load_label_rows``; their ``load_labels`` already is manual-only.
+
+        Rows are built for ``feature_set`` (``fetch_label_rows``), so the card grades the
+        feature set the bot trains on; a ``FeatureSetIncomplete`` propagates.
         """
-        rows_fn = getattr(store, "load_label_rows", None)
-        if not callable(rows_fn):
-            return store.load_labels()
         from ..ranker.threshold import is_calibration_source
 
+        if feature_set == DEFAULT_FEATURE_SET:
+            rows_fn = getattr(store, "load_label_rows", None)
+            if not callable(rows_fn):
+                return store.load_labels()
+            rows = rows_fn()
+        else:
+            rows = fetch_label_rows(store, feature_set=feature_set)
         return [
             (row[0], row[1])
-            for row in rows_fn()
+            for row in rows
             if len(row) < 3 or is_calibration_source(row[2])
         ]
+
+    @staticmethod
+    def _feature_set_incomplete_message(exc: BaseException, store) -> str:
+        """The not-ready reason plus the store's whole-photo coverage line, when it has one."""
+        reason = exc.reason
+        coverage_fn = getattr(store, "photo_feature_coverage", None)
+        if not callable(coverage_fn):
+            return reason
+        try:
+            from ..vision.photo_cards import WHOLE_PHOTO_FEATURE_VERSION
+
+            coverage = format_photo_coverage(coverage_fn(WHOLE_PHOTO_FEATURE_VERSION))
+        except Exception as cov_exc:  # noqa: BLE001 -- the reason alone still says what to do
+            coverage = (
+                "whole-photo coverage unavailable "
+                f"({type(cov_exc).__name__}: {cov_exc})"
+            )
+        return f"The ranker is not ready: {reason}. Coverage: {coverage}."
 
     @staticmethod
     def _training_mix(samples) -> dict:

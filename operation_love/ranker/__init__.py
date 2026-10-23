@@ -54,6 +54,50 @@ class Store(Protocol):
     # threshold it is also being used to audit. Both backends serve it from the same cache as
     # load_labels (training retrains after every label), and add_label keeps that cache coherent.
     def load_label_rows(self) -> list[tuple[bool, list[float], str]]: ...
+    # --- whole-photo features (ranker.feature_set face_crop_whole_photo_v1) ---------------
+    # `photo_features` is append-only, keyed by (app, profile_id, feature_version); the row
+    # with the latest created_at wins. Nothing below is read in face_crop_v1 mode, and
+    # labels.embedding / auto_passes.embedding keep the face-crop vector in every mode.
+    # `feature_version` must be vision/photo_cards.py's WHOLE_PHOTO_FEATURE_VERSION, the
+    # embedding WHOLE_PHOTO_DIMS finite numbers and card_count >= 1 (zero photo cards is an
+    # extraction failure, never a row). `source` is "live" or "backfill". ValueError for a
+    # malformed row; True once it is committed (SQLite) or buffered and applied to the
+    # in-memory feature map (BigQuery, flushed like a label). `best_effort=True` (face_crop_v1
+    # mode, where nothing reads the row) writes it at once and NEVER buffers it, so a rejected
+    # row cannot fail a later flush/close: a storage failure is a loud WARNING and False. All
+    # keyword-only.
+    def add_photo_features(
+        self,
+        *,
+        run_id: str,
+        app: str,
+        profile_id: str,
+        feature_version: str,
+        embedding: list[float],
+        card_count: int,
+        frames_sha256: str,
+        source: str,
+        best_effort: bool = False,
+    ) -> bool: ...
+    # Exactly load_label_rows()' rows, in its order, each extended with (photo_vector_or_None,
+    # has_photo_row) for `feature_version`, matched by (app, profile_id). has_photo_row False:
+    # no row exists (a label with no profile_id never matches). True with None: a zero-card row
+    # an earlier build stored, which the label loader counts as incomplete. Served from the
+    # same cache as load_label_rows on BigQuery.
+    def load_label_feature_rows(
+        self, feature_version: str
+    ) -> list[tuple[bool, list[float], str, list[float] | None, bool]]: ...
+    # {"labels", "with_features", "missing", "zero_cards"} (exact int keys) over those rows:
+    # labels == with_features + missing; zero_cards is part of with_features.
+    def photo_feature_coverage(self, feature_version: str) -> dict: ...
+    # The backfill's work list: one {"run_id","app","profile_id","source","frame_uris",
+    # "frame_sha256s"} per non-retracted label lacking a usable row (none, or a stored
+    # zero-card row; labels sharing an (app,
+    # profile_id) are listed once), frames in photo_index order from profile_photos (manual
+    # labels) or auto_pass_photos (auto_review_* labels). Empty frame lists mean this store
+    # cannot supply that label's frames (SQLite archives none; a pruned AUTO pass; no
+    # profile_id; an incomplete or conflicting archive) -- never a partial set.
+    def labels_missing_photo_features(self, feature_version: str) -> list[dict]: ...
     # capture_truncated: the bot hit its per-profile screencap ceiling without ever reaching
     # the profile's true bottom, i.e. this label was made from an INCOMPLETE read. Carried
     # all the way to the store (rather than left in the local, rotating debug log) so the

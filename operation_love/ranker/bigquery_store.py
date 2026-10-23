@@ -43,12 +43,19 @@ from .store import (
     auto_review_label_source,
     clean_auto_pass_photos,
     doomed_auto_passes,
+    has_usable_photo_row,
+    join_label_features,
     local_midnight_epoch,
+    missing_photo_feature_entries,
     normalize_timestamp_datetime,
     normalize_timestamp_epoch,
     normalize_timestamp_iso,
+    photo_feature_coverage_of,
     require_auto_pass_retention,
+    require_photo_feature_version,
+    stored_photo_vector,
     validate_auto_pass,
+    validate_photo_features,
 )
 
 _UPLOAD_ATTEMPTS = 3  # bounded retry so a transient GCS blip doesn't drop a swipe
@@ -246,6 +253,17 @@ _TABLES = {
     "auto_pass_reviews": (
         "profile_id STRING, app STRING, reviewed_at TIMESTAMP, would_like BOOL, kind STRING"
     ),
+    # Whole-photo features (store.py's "whole-photo features" helpers): one profile's pooled
+    # whole-photo vector per (app, profile_id, feature_version), append-only, the latest
+    # created_at wins. No zero-card row is written; one an earlier build stored has
+    # `card_count = 0` and an EMPTY embedding array (BigQuery ARRAYs cannot be NULL). Brand-new
+    # table, so a CREATE entry and no _MIGRATIONS line; it is optional to readers (see
+    # `_missing_optional_photo_features`).
+    "photo_features": (
+        "run_id STRING, app STRING, profile_id STRING, created_at TIMESTAMP, "
+        "feature_version STRING, embedding ARRAY<FLOAT64>, card_count INT64, "
+        "frames_sha256 STRING, source STRING"
+    ),
     "spend": (
         "run_id STRING, created_at TIMESTAMP, model STRING, input_tokens INT64, output_tokens INT64, "
         "cache_read_tokens INT64, cache_write_tokens INT64, cost_usd FLOAT64"
@@ -301,6 +319,32 @@ def _copy_label_rows(
     return [(liked, list(embedding), source) for liked, embedding, source in labels]
 
 
+def _align_identities(
+    cache: list[tuple[bool, list[float], str]],
+    rows: list[tuple[bool, list[float], str]],
+    keys: list[tuple[str, str]],
+) -> list[tuple[str, str]] | None:
+    """Each ``cache`` row's (app, profile_id), taken from a fresh read (``rows``/``keys``).
+
+    Rows are matched by their full content (liked, embedding, source), in read order among
+    equal contents.  Rows with equal content are interchangeable training rows, so which of
+    their identities each one gets cannot change the feature rows as a multiset.  None --
+    refill the cache from the read -- when a cached row is absent from the read (a retraction
+    or a permanently dropped row since the fill).  Rows the read has beyond the cache (written
+    by another process since the fill) are ignored, as load_label_rows ignores them.
+    """
+    pool: dict[tuple, list[tuple[str, str]]] = {}
+    for (liked, embedding, source), key in zip(rows, keys, strict=True):
+        pool.setdefault((liked, tuple(embedding), source), []).append(key)
+    aligned = []
+    for liked, embedding, source in cache:
+        candidates = pool.get((liked, tuple(embedding), source))
+        if not candidates:
+            return None
+        aligned.append(candidates.pop(0))
+    return aligned
+
+
 _AUTO_REVIEW_TABLES = ("auto_passes", "auto_pass_photos", "auto_pass_reviews")
 # Passes removed per DML statement by `prune_auto_passes`: each id is a bound scalar parameter
 # (`@p0..@pN`), and BigQuery caps a query at 10,000 parameters, so this is nowhere near a limit
@@ -344,6 +388,27 @@ def _missing_optional_auto_review(exc: Exception, *, ensure: bool) -> bool:
         and type(exc).__name__ == "NotFound"
         and any(name in str(exc) for name in _AUTO_REVIEW_TABLES)
     )
+
+
+def _missing_optional_photo_features(exc: Exception, *, ensure: bool) -> bool:
+    """Same accommodation as `_missing_optional_auto_review`, for `photo_features`.
+
+    A read-only store against a project no `ensure=True` store has touched since the table was
+    added reads it as empty, which makes every label "missing" its features -- the loud
+    not-ready answer, never a silent one.
+    """
+    return (
+        not ensure and type(exc).__name__ == "NotFound" and "photo_features" in str(exc)
+    )
+
+
+def _row_epoch(value, label: str) -> float:
+    """BigQuery TIMESTAMP (datetime) or a buffered ISO/epoch value -> epoch seconds."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+    return normalize_timestamp_epoch(value, label=label)
 
 
 def _epoch(value) -> float:
@@ -603,6 +668,16 @@ class BigQueryStore:
             # serve the ranker from the SAME cache load_labels projects; a second query per
             # retrain (training retrains after every label) would be far too slow.
             self._labels_cache: list[tuple[bool, list[float], str]] | None = None
+            # Each `_labels_cache` row's (app, profile_id), in the same order, for
+            # load_label_feature_rows; `_label_keys_for` is the cache LIST they were read
+            # with, so any refill or invalidation of the cache (a new list, or None) makes
+            # them stale by identity rather than by convention.
+            self._label_keys: list[tuple[str, str]] | None = None
+            self._label_keys_for: list | None = None
+            # feature_version -> {(app, profile_id): winning vector or None (zero cards)}.
+            self._photo_features_cache: dict[
+                str, dict[tuple[str, str], list[float] | None]
+            ] = {}
             # Process-local memory of what this run already archived / answered. The buffered
             # rows and BigQuery's streaming buffer both lag a write by a flush or a few
             # seconds; these sets make "archived once, answered once" hold regardless.
@@ -849,6 +924,268 @@ class BigQueryStore:
             )
             self._labels_cache = _copy_label_rows(out)
             return _copy_label_rows(self._labels_cache)
+
+    # --- whole-photo features -------------------------------------------------------------
+    def _label_identity_rows_locked(
+        self,
+    ) -> tuple[list[tuple[bool, list[float], str]], list[tuple[str, str]]]:
+        """``_labels_cache`` and each row's (app, profile_id), in the cache's own order.
+
+        Caller holds the lock.  The rows ARE the label cache, so they are exactly what
+        load_label_rows serves, in its order.  When the identities are unknown -- the cache was
+        filled by load_label_rows, or replaced or invalidated since -- one SELECT reads them:
+        load_label_rows' own query plus two columns, folded with the buffered labels the same
+        way.  A cache that already exists keeps its rows and order and only gains identities
+        (BigQuery promises no row order, so adopting the new read's order would make a v1
+        read and a whole-photo read of the same labels disagree); see ``_align_identities``
+        for when that is impossible and the cache is refilled from the read instead, exactly
+        as an invalidated cache is.  Only the whole-photo feature set and the tools reach
+        this; the face_crop_v1 path never does.
+        """
+        cache = self._labels_cache
+        if (
+            cache is not None
+            and self._label_keys is not None
+            and self._label_keys_for is cache
+            and len(self._label_keys) == len(cache)
+        ):
+            return _copy_label_rows(cache), list(self._label_keys)
+        rows = self.client.query(
+            "SELECT l.liked, l.embedding, l.source, l.app, l.profile_id "
+            f"FROM `{self._tid('labels')}` l WHERE {self._label_not_retracted()}"
+        ).result()
+        out: list[tuple[bool, list[float], str]] = []
+        keys: list[tuple[str, str]] = []
+        for r in [*rows, *self._buf["labels"]]:
+            out.append(
+                (bool(r["liked"]), list(r["embedding"]), str(r.get("source") or ""))
+            )
+            keys.append((str(r.get("app") or ""), str(r.get("profile_id") or "")))
+        aligned = None if cache is None else _align_identities(cache, out, keys)
+        if aligned is None:
+            self._labels_cache = _copy_label_rows(out)
+        else:
+            keys = aligned
+        self._label_keys = keys
+        self._label_keys_for = self._labels_cache
+        return _copy_label_rows(self._labels_cache), list(keys)
+
+    def _photo_features_locked(
+        self, version: str
+    ) -> dict[tuple[str, str], list[float] | None]:
+        """(app, profile_id) -> winning vector of ``version`` (None = zero cards); cached.
+
+        One query per version per process; add_photo_features keeps the map coherent, the same
+        way add_label keeps the label cache.  Rows still in the buffer are folded in.  Caller
+        holds the lock.
+        """
+        cached = self._photo_features_cache.get(version)
+        if cached is not None:
+            return cached
+        try:
+            rows = list(
+                self.client.query(
+                    "SELECT app, profile_id, created_at, embedding, card_count "
+                    f"FROM `{self._tid('photo_features')}` "
+                    "WHERE feature_version = @feature_version",
+                    job_config=_job_config([("feature_version", "STRING", version)]),
+                ).result()
+            )
+        except Exception as exc:  # noqa: BLE001 - classified by name; SDK optional at import
+            if not _missing_optional_photo_features(exc, ensure=self._ensure):
+                raise
+            rows = []
+        rows.extend(
+            row
+            for row in self._buf["photo_features"]
+            if row["feature_version"] == version
+        )
+        ordered = sorted(
+            enumerate(rows),
+            key=lambda item: (
+                _row_epoch(item[1]["created_at"], "photo_features created_at"),
+                item[0],
+            ),
+        )
+        features: dict[tuple[str, str], list[float] | None] = {}
+        for _order, row in ordered:
+            app, profile_id = str(row["app"]), str(row["profile_id"])
+            features[(app, profile_id)] = stored_photo_vector(
+                row.get("embedding"), row.get("card_count"), f"{app}/{profile_id}"
+            )
+        self._photo_features_cache[version] = features
+        return features
+
+    def add_photo_features(
+        self,
+        *,
+        run_id,
+        app,
+        profile_id,
+        feature_version,
+        embedding,
+        card_count,
+        frames_sha256,
+        source,
+        best_effort=False,
+    ) -> bool:
+        """Buffer (or, ``best_effort``, insert) one profile's whole-photo feature row.
+
+        Validated by ``store.validate_photo_features`` (ValueError otherwise, in either mode).
+        By default the row is buffered and flushed in batches like a label (True once
+        buffered): the required write of face_crop_whole_photo_v1 mode, inside the Training
+        persist's flush boundary.  ``best_effort`` is for face_crop_v1 mode, where nothing reads
+        the row: it is inserted at once, NEVER buffered, so a rejected row cannot fail a later
+        ``flush()`` or ``close()`` of rows that matter; a rejection or an insert error is a loud
+        WARNING and False.  Either way a written row is applied to the in-memory feature map, so
+        a retrain right after a Training label sees it.
+        """
+        row = validate_photo_features(
+            run_id=run_id,
+            app=app,
+            profile_id=profile_id,
+            feature_version=feature_version,
+            embedding=embedding,
+            card_count=card_count,
+            frames_sha256=frames_sha256,
+            source=source,
+        )
+        vector = list(row["embedding"])
+        payload = {
+            "run_id": row["run_id"],
+            "app": row["app"],
+            "profile_id": row["profile_id"],
+            "created_at": _now(),
+            "feature_version": row["feature_version"],
+            "embedding": vector,
+            "card_count": row["card_count"],
+            "frames_sha256": row["frames_sha256"],
+            "source": row["source"],
+        }
+        with self._lock:
+            # Same footing as add_label: the follow-on row of a Training archive close may
+            # already be waiting for.
+            self._require_open_for_write(allow_closing=True)
+            if best_effort:
+                try:
+                    errors = self._insert_rows_json(
+                        "photo_features", [payload], row_ids=[_row_id(payload)]
+                    )
+                except Exception as exc:  # noqa: BLE001 - best effort: reported, never raised
+                    errors = f"{type(exc).__name__}: {exc}"
+                if errors:
+                    print(
+                        "WARNING: BigQuery store: the best-effort photo_features row for "
+                        f"{row['app']}/{row['profile_id']} was NOT saved ({errors})"
+                    )
+                    return False
+                self._written["photo_features"] += 1
+            else:
+                self._buf["photo_features"].append(payload)
+            features = self._photo_features_cache.get(row["feature_version"])
+            if features is not None:
+                features[(row["app"], row["profile_id"])] = list(vector)
+            if not best_effort:
+                self._maybe_flush("photo_features")
+        return True
+
+    def load_label_feature_rows(
+        self, feature_version: str
+    ) -> list[tuple[bool, list[float], str, list[float] | None, bool]]:
+        """Exactly load_label_rows()' rows, in its order, plus (photo_vector, has_photo_row).
+
+        Served from the label cache (see ``_label_identity_rows_locked``) and the cached
+        feature map, matched by (app, profile_id).  ``has_photo_row`` False means no row
+        exists; True with a None vector is a zero-card row an earlier build stored.
+        """
+        version = require_photo_feature_version(feature_version)
+        with self._lock:
+            rows, keys = self._label_identity_rows_locked()
+            features = self._photo_features_locked(version)
+            return join_label_features(rows, keys, features)
+
+    def photo_feature_coverage(self, feature_version: str) -> dict:
+        """``{"labels","with_features","missing","zero_cards"}`` (see photo_feature_coverage_of)."""
+        return photo_feature_coverage_of(self.load_label_feature_rows(feature_version))
+
+    def labels_missing_photo_features(self, feature_version: str) -> list[dict]:
+        """The backfill's work list (see ``store.missing_photo_feature_entries``).
+
+        Frames are the archived ``profile_photos`` set of a manual label and the
+        ``auto_pass_photos`` set of an ``auto_review*`` label, by (run_id, app, profile_id), in
+        photo_index order.  An AUTO pass pruned by retention has no frames left, so its entry
+        comes back with empty lists.  Read-only: queries, never a flush or a write.
+        """
+        version = require_photo_feature_version(feature_version)
+        with self._lock:
+            labels = [
+                dict(row)
+                for row in self.client.query(
+                    "SELECT l.run_id, l.app, l.profile_id, l.source "
+                    f"FROM `{self._tid('labels')}` l "
+                    f"WHERE {self._label_not_retracted()} ORDER BY l.created_at"
+                ).result()
+            ]
+            labels.extend(dict(row) for row in self._buf["labels"])
+            features = self._photo_features_locked(version)
+            # Read an archive only when a label that lacks a usable row needs frames from it.
+            pending_review = {
+                str(label.get("source") or "").startswith(AUTO_REVIEW_SOURCE_PREFIX)
+                for label in labels
+                if label.get("profile_id")
+                and not has_usable_photo_row(
+                    features, (str(label.get("app") or ""), str(label["profile_id"]))
+                )
+            }
+            manual_frames = (
+                self._archived_frames_locked("profile_photos", optional=False)
+                if False in pending_review
+                else {}
+            )
+            review_frames = (
+                self._archived_frames_locked("auto_pass_photos", optional=True)
+                if True in pending_review
+                else {}
+            )
+        return missing_photo_feature_entries(
+            labels, features, manual_frames, review_frames
+        )
+
+    def _archived_frames_locked(
+        self, table: str, *, optional: bool
+    ) -> dict[tuple[str, str, str], list[tuple[float, int, str, str]]]:
+        """(run_id, app, profile_id) -> [(created_at epoch, photo_index, gcs_uri, sha256)]."""
+        try:
+            rows = list(
+                self.client.query(
+                    "SELECT run_id, app, profile_id, created_at, photo_index, gcs_uri, sha256 "
+                    f"FROM `{self._tid(table)}`"
+                ).result()
+            )
+        except Exception as exc:  # noqa: BLE001 - classified by name; SDK optional at import
+            if not optional or not _missing_optional_auto_review(
+                exc, ensure=self._ensure
+            ):
+                raise
+            rows = []
+        frames: dict[tuple[str, str, str], list[tuple[float, int, str, str]]] = {}
+        for row in [*rows, *self._buf[table]]:
+            frames.setdefault(
+                (
+                    str(row["run_id"] or ""),
+                    str(row["app"] or ""),
+                    str(row["profile_id"] or ""),
+                ),
+                [],
+            ).append(
+                (
+                    _row_epoch(row["created_at"], f"{table} created_at"),
+                    row["photo_index"],
+                    str(row["gcs_uri"] or ""),
+                    str(row["sha256"] or ""),
+                )
+            )
+        return frames
 
     def count_today(self, app: str, *, source: str = "auto") -> int:
         """One validated decision source's local-day count."""
@@ -1795,6 +2132,11 @@ class BigQueryStore:
             )
             label = (liked, list(embedding_vec), str(source or ""))
             if self._labels_cache is not None:
+                if (
+                    self._label_keys is not None
+                    and self._label_keys_for is self._labels_cache
+                ):
+                    self._label_keys.append((str(app or ""), str(profile_id or "")))
                 self._labels_cache.append(label)
             self._maybe_flush("labels")
 

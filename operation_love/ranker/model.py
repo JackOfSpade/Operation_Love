@@ -6,6 +6,14 @@ back to a small pure-Python logistic regression so the interface works without
 heavy deps (the fallback is fine for tests / low dimensions, slow for the real
 ~1280-dim vectors — install the `ml` extra for sklearn).
 
+The feature dimension comes from the training rows, never from a constant: 1280 for
+``ranker.feature_set: face_crop_v1``, 2048 for ``face_crop_whole_photo_v1`` (the v1 vector
+followed by the 768-d whole-photo vector).  Either way the first 512 dims are the ArcFace
+identity template that out-of-fold identity grouping reads.  A loader that cannot supply the
+configured feature set (``threshold.FeatureSetIncomplete``) is published with
+``mark_not_ready(exc.reason)`` -- the model is NOT READY with that reason, never trained on a
+partial or zero-filled label set.
+
 Cold-start: stays "not ready" until at least `min_labels` labels exist AND both
 like/dislike classes are present, so the bot doesn't swipe blind on no signal.
 
@@ -52,7 +60,7 @@ MAX_CONTEXTUAL_RECALL_BUDGET = 0.2
 
 
 def new_classifier():
-    """Strong L2 (small C) for ~1280-d features on tens-hundreds of labels, and
+    """Strong L2 (small C) for ~1280-2048-d features on tens-hundreds of labels, and
     balanced class weights since likes/passes are usually imbalanced. Raises
     ImportError if scikit-learn isn't installed."""
     from sklearn.linear_model import LogisticRegression
@@ -171,6 +179,11 @@ class PreferenceModel:
         # Why the model is not ready, for the operator (startup line, `stats`).  Pessimistic
         # until a train() completes: an exception mid-train leaves this string in place.
         self.not_ready_reason: str | None = "not trained yet"
+        # What KIND of not-ready this is, when a caller said so (``mark_not_ready(kind=...)``;
+        # ``threshold.FEATURE_SET_INCOMPLETE_KIND`` for missing whole-photo rows), else None --
+        # a cold start or a failed train.  Lets the worker name the right remedy without
+        # parsing the reason text.
+        self.not_ready_kind: str | None = None
         self._clf = None
         self._impl = None
         self._feature_dim: int | None = None
@@ -220,6 +233,33 @@ class PreferenceModel:
         self.not_ready_reason = reason
         return False
 
+    def mark_not_ready(
+        self, reason: str, *, n_labels: int | None = None, kind: str | None = None
+    ) -> bool:
+        """Publish NOT READY with ``reason`` when the labels could not even be loaded.
+
+        For a loader failure that is a verdict rather than a bug -- ``FeatureSetIncomplete``
+        (pass ``exc.reason``, ``n_labels=exc.labels`` and ``kind=FEATURE_SET_INCOMPLETE_KIND``).
+        Like a failed ``train`` it replaces the state as a whole: a classifier from an earlier
+        label set is never kept serving.  ``kind`` is published as ``not_ready_kind`` until the
+        next ``train``.  Returns False (the new ``ready``).
+        """
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("mark_not_ready needs a non-empty reason")
+        if n_labels is not None and (type(n_labels) is not int or n_labels < 0):
+            raise ValueError("n_labels must be None or a non-negative integer")
+        if kind is not None and (not isinstance(kind, str) or not kind.strip()):
+            raise ValueError("kind must be None or a non-empty string")
+        with self._lock:
+            self._clf = None
+            self._impl = None
+            self._feature_dim = None
+            self._calibration = None
+            if n_labels is not None:
+                self.n_labels = n_labels
+            self.not_ready_kind = kind
+            return self._not_ready(reason)
+
     def train(
         self,
         samples: list[tuple[bool, list[float]]]
@@ -251,6 +291,7 @@ class PreferenceModel:
             self._feature_dim = None
             self._calibration = None
             self.not_ready_reason = "training did not complete"
+            self.not_ready_kind = None
             if not isinstance(samples, (list, tuple)):
                 raise ValueError(
                     "samples must be a list or tuple of (liked, feature_vector) pairs"

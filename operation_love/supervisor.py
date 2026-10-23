@@ -47,9 +47,16 @@ from .opener.service import OpenerService, _write_opener_rejection_deadletter
 from .private_files import ensure_private_dir, open_private_rw
 from .ranker import make_store
 from .ranker.bigquery_store import _profile_upload_deadline_s
-from .ranker.decider import RankerDecider
+from .ranker.decider import RankerDecider, mark_feature_set_incomplete
 from .ranker.model import PreferenceModel
-from .ranker.threshold import fetch_label_rows, fetch_live_review, format_calibration
+from .ranker.threshold import (
+    DEFAULT_FEATURE_SET,
+    FeatureSetIncomplete,
+    fetch_label_rows,
+    fetch_live_review,
+    format_calibration,
+    require_feature_set,
+)
 from .runtime import Capabilities
 from .status import RunStatus
 from .training_actions import MAX_PROFILE_REVIEW_FRAMES
@@ -969,10 +976,20 @@ def run(
         # Rows are (liked, embedding, source) triples when the store records label sources
         # (every real store does); a bare double that only has load_labels() yields pairs.
         # Either way len(labels) is the label count the hub and the startup line report.
-        labels = fetch_label_rows(store)
-        status.set_global(labels=len(labels))
+        # Rows are built for ranker.feature_set; labels lacking whole-photo rows leave the
+        # ranker NOT READY below (labels=None), never trained on a subset.
+        feature_set = require_feature_set(
+            getattr(cfg.ranker, "feature_set", DEFAULT_FEATURE_SET)
+        )
+        incomplete: FeatureSetIncomplete | None = None
+        try:
+            labels = fetch_label_rows(store, feature_set=feature_set)
+            label_count = len(labels)
+        except FeatureSetIncomplete as exc:
+            labels, incomplete, label_count = None, exc, exc.labels
+        status.set_global(labels=label_count)
         print(
-            f"Store: backend={cfg.storage.backend} labels={len(labels)}  "
+            f"Store: backend={cfg.storage.backend} labels={label_count}  "
             f"apps={cfg.enabled_apps}"
         )
 
@@ -1047,10 +1064,13 @@ def run(
         # Best-effort: the live false-pass evidence is an add-on, so a store that cannot
         # produce it (or raises) trains WITHOUT the correction rather than blocking the run.
         # fetch_live_review prints the failure loudly itself.
-        live_review = fetch_live_review(store)
-        ready = model.train(labels, live_review=live_review)
+        if incomplete is None:
+            live_review = fetch_live_review(store)
+            ready = model.train(labels, live_review=live_review)
+        else:
+            ready = mark_feature_set_incomplete(model, incomplete)
         print(
-            f"Ranker: labels={len(labels)} ready={ready} "
+            f"Ranker: labels={label_count} ready={ready} "
             f"(min={cfg.ranker.min_labels_to_engage}, "
             f"threshold={_ranker_threshold_text(cfg, model)})"
         )
@@ -1058,6 +1078,10 @@ def run(
         # what recall the bot is actually operating at, or why it is not ready.
         if cfg.ranker.like_recall_target is not None:
             print(format_calibration(model))
+        if feature_set != DEFAULT_FEATURE_SET:
+            print(f"Ranker feature set: {feature_set}")
+        if incomplete is not None:
+            print(f"Ranker not ready: {incomplete.reason}")
         quality = QualityFilter(
             cfg.quality_filter.enabled,
             cfg.quality_filter.min_score,
@@ -1068,7 +1092,7 @@ def run(
                 "Quality filter: DISABLED — all photos are scored as passing quality threshold"
             )
         embedder = Embedder()
-        decider = RankerDecider(quality, embedder, model)
+        decider = RankerDecider(quality, embedder, model, feature_set=feature_set)
 
         if _stop_requested(stop_event):
             _abort_startup(run_id, status, cfg, store)

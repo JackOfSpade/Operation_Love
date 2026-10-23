@@ -4,8 +4,31 @@ from __future__ import annotations
 
 from . import config as cfg_mod
 from .ranker import make_store
+from .ranker.decider import format_photo_coverage, mark_feature_set_incomplete
 from .ranker.model import PreferenceModel
-from .ranker.threshold import fetch_training_inputs, format_calibration
+from .ranker.threshold import (
+    DEFAULT_FEATURE_SET,
+    FeatureSetIncomplete,
+    fetch_training_inputs,
+    format_calibration,
+    require_feature_set,
+)
+
+
+def _coverage_line(store) -> str | None:
+    """One line of whole-photo coverage from ``photo_feature_coverage``, or None."""
+    from .vision.photo_cards import WHOLE_PHOTO_FEATURE_VERSION
+
+    coverage = getattr(store, "photo_feature_coverage", None)
+    if not callable(coverage):
+        return None
+    try:
+        c = coverage(WHOLE_PHOTO_FEATURE_VERSION)
+    except Exception as exc:  # noqa: BLE001 -- a readout line; say why instead of crashing
+        return (
+            f"Features: whole-photo coverage unavailable ({type(exc).__name__}: {exc})"
+        )
+    return f"Features: {format_photo_coverage(c)}"
 
 
 def show(config_path: str = "config.yaml") -> None:
@@ -15,10 +38,20 @@ def show(config_path: str = "config.yaml") -> None:
         cfg, ensure=False
     )  # read-only; don't run DDL/IAM setup just to print a readout
     try:
+        feature_set = require_feature_set(
+            getattr(cfg.ranker, "feature_set", DEFAULT_FEATURE_SET)
+        )
         # (liked, embedding, source) rows when the store records sources; the live review
         # stats feed the recall-target model's false-pass correction (best-effort: None when
         # the store has none or they cannot be read -- a loud message is printed for the latter).
-        labels, live = fetch_training_inputs(store)
+        # Labels lacking whole-photo rows leave the model NOT READY; the v1 rows are then read
+        # only for the label counts below.
+        incomplete: FeatureSetIncomplete | None = None
+        try:
+            labels, live = fetch_training_inputs(store, feature_set)
+        except FeatureSetIncomplete as exc:
+            incomplete = exc
+            labels, live = fetch_training_inputs(store, DEFAULT_FEATURE_SET)
         model = PreferenceModel(
             cfg.ranker.min_labels_to_engage,
             cfg.ranker.like_threshold,
@@ -26,13 +59,21 @@ def show(config_path: str = "config.yaml") -> None:
             recall_target=cfg.ranker.like_recall_target,
             contextual_recall_budget=cfg.ranker.contextual_recall_budget,
         )
-        ready = model.train(labels, live_review=live)
+        if incomplete is None:
+            ready = model.train(labels, live_review=live)
+        else:
+            ready = mark_feature_set_incomplete(model, incomplete)
         liked = sum(1 for row in labels if row[0])
 
         print(f"Storage : {cfg.storage.backend}")
         print(
             f"Labels  : {len(labels)}  (liked {liked} / passed {len(labels) - liked})"
         )
+        if feature_set != DEFAULT_FEATURE_SET:
+            print(f"Features: {feature_set}")
+            line = _coverage_line(store)
+            if line is not None:
+                print(line)
         if cfg.ranker.like_recall_target is None:
             threshold_text = f"threshold {cfg.ranker.like_threshold}"
         elif model.calibration is not None:
@@ -49,7 +90,9 @@ def show(config_path: str = "config.yaml") -> None:
             print(f"          {format_calibration(model)}")
         if not ready:
             need = max(0, cfg.ranker.min_labels_to_engage - len(labels))
-            if need > 0:
+            if incomplete is not None:
+                print(f"          Not ready: {incomplete.reason}")
+            elif need > 0:
                 print(
                     f"          Seed ~{need} more decisions in training mode to engage auto mode."
                 )

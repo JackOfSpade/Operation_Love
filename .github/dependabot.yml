@@ -5,6 +5,12 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # setuptools 82+ removed pkg_resources, which openai-clip imports at module load for the
+      # clipiqa quality filter. The ml extra pins setuptools<82 on purpose (see pyproject.toml);
+      # tests/test_pkg_resources_guard.py fails any PR that raises it.
+      - dependency-name: setuptools
+        versions: [">=82"]
   - package-ecosystem: github-actions
     directory: /
     groups:

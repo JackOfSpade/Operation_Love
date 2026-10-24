@@ -902,6 +902,29 @@ arrival order, blind to score, at a recall cost nothing measures.
 **Still unmeasured:** the realized AUTO like share. No AUTO run has happened since 2026-08-25;
 AUTO is blocked by the release gate. See the §5 trigger added the same day.
 
+### Addendum 2026-10-23 (b) — the whole-photo feature set shipped; the like-share table, re-measured
+
+The §5 trigger added with the addendum above asks for its table to be re-measured after any ranker
+feature change. `ranker.feature_set` switched to `face_crop_whole_photo_v1` the same day, after
+`tools/compare_feature_sets.py` passed its pre-registered rule on the live code (AUC 0.726 -> 0.749).
+Re-measured on the same 502 manual labels (one orphan label without an archive was removed by the
+owner), nested identity-grouped CV, means over 20 row orders:
+
+| Target | Feature set | Recall kept | Deck liked | Would-likes lost / 100 | Unwanted likes / 100 |
+|---|---|---|---|---|---|
+| 0.95 | face_crop_v1 | 0.956 | 84.0% | 2.0 | 40.4 |
+| 0.95 | face_crop_whole_photo_v1 | 0.956 | 83.0% | 2.0 | 39.4 |
+| **0.90 (ships)** | face_crop_v1 | 0.914 | 77.6% | 3.9 | 36.0 |
+| **0.90 (ships)** | **face_crop_whole_photo_v1 (ships)** | **0.912** | **75.5%** | **4.0** | **33.9** |
+| fixed 0.5 | face_crop_v1 | 0.631 | 46.8% | 16.8 | 18.0 |
+| fixed 0.5 | face_crop_whole_photo_v1 | 0.659 | 47.3% | 15.6 | 17.3 |
+
+What ships, then, is a ~75.5% expected like share, about 2 points lower than the addendum above
+assumed, with the same recall. The accepted risk is unchanged in kind: still far above §2's human
+band (~20-45%) and under its ">85% = bot" line. The time-forward shift the addendum above noted
+(+3-6 points on newer profiles, measured at 0.95) was not re-measured for the new feature set.
+`target_like_ratio` stays unset. The §5 trigger stands as written.
+
 ## 5. Re-check triggers
 - **Read-pause shape is reasoned, not measured (added 2026-08-24)** — the per-frame read dwell
   (a metronome: fixed-mean, repeating after every one of ~11–13 frames) was replaced with ONE

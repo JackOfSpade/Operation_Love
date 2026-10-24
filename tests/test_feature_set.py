@@ -392,7 +392,8 @@ def test_config_rejects_an_unknown_or_non_string_feature_set_by_name(bad):
         c.validate(cfg)
 
 
-def test_shipped_config_yaml_stays_on_face_crop_v1():
+def test_shipped_config_yaml_uses_the_measured_whole_photo_feature_set():
+    # Switched 2026-10-23 after tools/compare_feature_sets.py passed the pre-registered rule.
     cfg = c.load("config.yaml")
     c.validate(cfg)
-    assert cfg.ranker.feature_set == "face_crop_v1"
+    assert cfg.ranker.feature_set == "face_crop_whole_photo_v1"

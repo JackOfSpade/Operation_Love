@@ -1035,12 +1035,21 @@ auto_review:
   target, so a correctly calibrated target does not flicker. The cutoff shown as "calibrated" is
   only taken from a cached or last-run calibration made for the CURRENT target.
 
-#### Whole-photo feature set (optional; measured before any switch)
+#### Whole-photo feature set (shipped 2026-10-23 after the measured switch)
 
 ```yaml
 ranker:
-  feature_set: face_crop_v1   # default (today's ranker); face_crop_whole_photo_v1 adds the whole-photo vector
+  feature_set: face_crop_whole_photo_v1   # shipped; face_crop_v1 = the original face-crop-only ranker
 ```
+- **Measured and switched 2026-10-23.** After the backfill reached all 502 labels (one orphan
+  label whose archive the 2026-10-10 cleanup had deleted was removed by the owner), the
+  comparison below passed all four clauses on the live code: AUC 0.7256 -> 0.7486, corrected-t
+  95% CI [+0.005, +0.041], positive on 20/20 seeds; at the 0.90 target dislikes_passed 0.333 ->
+  0.371 with recall unchanged (0.913). Re-measured over 20 row orders on the same labels: the
+  deck liked falls 77.6% -> 75.5% and unwanted likes 36.0 -> 33.9 per 100 profiles, while lost
+  likes stay at about 4 per 100. The trained cutoff is 0.4706 (expected false-pass 16.4%, against
+  18.2% for face_crop_v1). Every AUTO decision now spends about 3 s more on whole-photo
+  extraction.
 - **What it is.** `face_crop_v1` is today's 1280-d vector (ArcFace + face-crop CLIP), model,
   calibration and decisions, unchanged. `face_crop_whole_photo_v1` appends a 768-d CLIP vector
   pooled over EVERY unique photo card of the profile (all frames, in order, no quality filter):

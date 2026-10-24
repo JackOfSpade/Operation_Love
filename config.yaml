@@ -312,7 +312,7 @@ apps:
     # To replace it with real evidence later, collect a corpus with tools/hinge_video_bound
     # (owner labeled) or tools/hinge_video_bound_auto (circular), then swap this block for
     # `still_photo_bound_evidence`. The two keys are mutually exclusive by design.
-    # TARGETING CALIBRATION — renewed 2026-10-12 for the live Hinge 10.7.0 build.
+    # TARGETING CALIBRATION — renewed 2026-10-24 for the live Hinge 10.9.0 build.
     # This schema-v3 mapping was emitted from four calibration and three separately captured
     # held-out profiles using the hybrid AI-reviewed photo-item-1-only workflow. Held-out checks
     # produced zero foreign accepts and zero false refusals. It licenses targeted suggestions in
@@ -321,20 +321,20 @@ apps:
     targeting_calibration:
       schema_version: 3
       device: "33111JEHN04475"
-      hinge_version_name: "10.7.0"
+      hinge_version_name: "10.9.0"
       frame_size_px: [1080, 2400]
       composer_layout_id: hinge_inline_v1
       item_selection_policy_id: hinge_photos_only_v2
-      identity_match_max_dist: 1.8125
+      identity_match_max_dist: 1.3212
       inline_item_max_dist: 14.9099
-      calibrated_at: "2026-10-12T17:08:20.148675+00:00 — measured from session(s): targeting_20261012T_10_7_calibration, targeting_20261012T_10_7_heldout"
+      calibrated_at: "2026-10-24T06:48:32.179289+00:00 — measured from session(s): targeting_20261024T051219Z_10_9_calibration, targeting_20261024T051219Z_10_9_heldout"
       identity_band: [0.1, 0.048, 0.8, 0.094]
       content_band: [0.125, 0.875]
     still_photo_assumption_acceptance:
       acceptance: I_ACCEPT_UNMEASURED_CENTERED_AUTOPLAY_ASSUMPTION
-      accepted_at: "2026-10-12 renewal for Hinge 10.7.0, installed when the owner chose the hybrid AI-reviewed recalibration option that includes re-accepting this assumption for the exact build/device"
+      accepted_at: "2026-10-24 renewal for Hinge 10.9.0, explicitly approved by the owner for this exact build/device and installation after the hybrid AI-reviewed calibration passed"
       device: "33111JEHN04475"
-      hinge_version_name: "10.7.0"
+      hinge_version_name: "10.9.0"
       rationale: >-
         Measuring the held-out video false-accept rate needs roughly 420 profiles and 420 real
         passes at the observed rate of one video per seven profiles, which the owner judged
@@ -343,19 +343,12 @@ apps:
         detectable by the byte-exactness test. Accepted residual: a video that is not playing at
         all while observed, meaning stalled, buffering, unloaded, or an ended non-looping clip.
         The re-attach probe gives such a card a second trigger before anything is called a photo.
-    # AI-supervised 10.9.0 update check: owner-selected Dislike and a continuously recorded
-    # direct Send Priority Like to a stable successor deck. The nested-heart matcher was checked on
-    # both deck frames. This is qualitative Training compatibility, not a new numerical or
-    # video false-accept measurement; the 10.7.0 source evidence above retains its provenance.
-    version_compatibility_review:
-      artifact_path: ops/reviews/hinge_10_9_compatibility_receipt.json
-      artifact_sha256: 3a5d31aac3e033f9302abc05359acf872d9db653c9b738a20eee4b8953aa8021
     # HISTORICAL MANUAL AUTO RELEASE (2026-08-25): this exact legacy production artifact binds
     # the historical 10.0.1 calibration to run d8547ff144b4. The phone is now on 10.9.0, so
-    # this release artifact does not license AUTO on the live build. The 10.7.0 source
-    # calibration plus 10.9.0 compatibility review above license Training only. Production
-    # OBSERVE is retired: AUTO now needs a fresh calibration measured on the live build, then a
-    # supervised Training run on it verified by `python -m tools.hinge_training_release`, whose
+    # this release artifact does not license AUTO on the live build. The fresh 10.9.0
+    # calibration above licenses Training without a compatibility override. Production
+    # OBSERVE is retired: AUTO now needs a supervised Training run on it verified by
+    # `python -m tools.hinge_training_release`, whose
     # printed training_release_evidence mapping REPLACES this one (exactly one gate; the artifact
     # files under ops/release/d8547ff144b4/ stay as the audit record, and the run stays protected
     # above). The still-photo assumption remains explicitly UNMEASURED and cannot by itself

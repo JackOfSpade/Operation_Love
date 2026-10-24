@@ -688,12 +688,12 @@ Worker/hub/store or make a real profile request. After installing the measured c
   transported.
 - **Item 1 inline composer identity:** heart item 1 without an intervening scroll. Hinge's
   inline composer was introduced in 9.134 and was measured on the historical 10.0.1 build. The
-  live build is now 10.4.0 on device `33111JEHN04475` (1080x2400); the 10.0.1 and superseded 10.3.0
-  calibrations remain immutable audit evidence, while the separately measured 10.4.0 schema-v3
+  live build is now 10.9.0 on device `33111JEHN04475` (1080x2400); the superseded calibrations
+  remain immutable audit evidence, while the separately measured 10.9.0 schema-v3
   hybrid AI-reviewed circular-risk photo-item-1-only calibration is installed for Training. Its
   evidence is explicitly not human ground truth; its matching still-photo assumption clears the
   separate numbering-policy gate.
-  Do not relabel either calibration across builds; collect a new campaign after any later
+  Do not relabel a calibration across builds; collect a new campaign after any later
   app/frame drift.
   The inline composer auto-focuses immediately, so collect an initial and a settled auto-focused
   reading rather than inventing an unfocused-to-focused transition. Confirm the selected card
@@ -868,22 +868,27 @@ from `defer` → ready mid-session. Training never calls the ranker to make the 
 
 ## 4. Go autonomous — auto mode (it swipes for you)
 
-**Current release state (2026-10-23): AUTO is blocked pending a fresh calibration and a Training
-release.** The legacy-named manual `observe_release_evidence` artifact for production run
-`d8547ff144b4` remains installed beside it, but it binds the historical 10.0.1 calibration. The
-installed calibration is 10.7.0, and the live app is 10.9.0 on device `33111JEHN04475`
-(1080x2400) under a `training_only` compatibility review. Production OBSERVE is retired, so the
-old release tools cannot run. The supported path is a supervised Training release:
+**Current release state (2026-10-24): a fresh exact-build 10.9.0 calibration is installed; AUTO
+remains blocked pending a Training release.** The hybrid AI-reviewed photo-item-1-only campaign
+used four calibration and three separately captured held-out profiles on device `33111JEHN04475`
+(1080x2400). The measured bounds are identity `1.3212` and inline item `14.9099`, with zero
+held-out foreign accepts and zero false refusals. The owner renewed the explicitly UNMEASURED
+still-photo assumption for this build/device, and `version_compatibility_review` was removed.
+The config remains in `mode: training`. The historical manual `observe_release_evidence` for
+`d8547ff144b4` remains installed and protected, but binds the 10.0.1 calibration and cannot release
+AUTO on 10.9.0. Production OBSERVE is retired; the remaining supported path is a supervised
+Training release:
 
-1. **Calibrate the live build.** Run a fresh targeting campaign on 10.9.0 (section 2, the hybrid
-   AI-reviewed `capture` → `tools.hinge_calibration_review` → `measure` path). Keep `config.yaml`
+1. **Calibrate the live build (completed for 10.9.0).** After a future update, run a fresh
+   targeting campaign on that build (section 2, the hybrid AI-reviewed
+   `capture` → `tools.hinge_calibration_review` → `measure` path). Keep `config.yaml`
    unchanged while capturing: the live capture reads the build, and so picks the 10.8+ heart
    glyph, only while a targeting calibration is configured. `measure`, `verify-entry-anchor` and
    `attach-operational-evidence` now take the build from the sessions' manifests and refuse
    sessions that disagree on it. Choose Pass or `--send-like` per run.
-2. **Install it.** Paste the emitted calibration, re-accept the still-photo assumption for the new
-   build (owner decision), and delete `version_compatibility_review`. A release binds only an
-   exact-build calibration.
+2. **Install it (completed for 10.9.0).** Paste the emitted calibration, re-accept the still-photo
+   assumption for the new build (owner decision), and delete `version_compatibility_review`.
+   A release binds only an exact-build calibration.
 3. **Record a short Training run** with at least one Like and one Pass on that build. Keep it
    short: the verifier needs that Like's and that Pass's retained frames, and the retained pool
    rotates in long sessions.

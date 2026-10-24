@@ -1,0 +1,26 @@
+{
+  "calibration_calibrated_at": "2026-10-24T06:48:32.179289+00:00 \u2014 measured from session(s): targeting_20261024T051219Z_10_9_calibration, targeting_20261024T051219Z_10_9_heldout",
+  "calibration_sha256": "b3f9705be4950d5ef81ef6fbc6c8b5d3729c2bca234761cb96a5a485726d9c5a",
+  "chain_evidence_sha256": "52200931426a4cb505b79f427b5e50e3f49e4da4173b24f084134380d5f08ea4",
+  "completed": true,
+  "debug_actions_sha256": "a805f7539805933234e4ce5fe2e5e4245564a72ceaf715badc52d349c3a98df6",
+  "device": "33111JEHN04475",
+  "frame_size_px": [
+    1080,
+    2400
+  ],
+  "hinge_version_name": "10.9.0",
+  "human_ground_truth": true,
+  "kind": "hinge_supervised_training_release",
+  "not_exercised": [
+    "auto_keyboard_up_presend_verification",
+    "auto_deck_pass",
+    "auto_like_landing_without_training_successor_proof"
+  ],
+  "production_run_id": "cd29bea37976",
+  "production_run_reference": "data/hinge_debug/cd29bea37976",
+  "schema_version": 1,
+  "source": "manual",
+  "store_persistence_evidence_sha256": "074472c2eaf9f02719189f2d639609e3a2a06c608fb23e051072435d4ab577bb",
+  "verified_at": "2026-10-24T10:36:35.332065+00:00"
+}

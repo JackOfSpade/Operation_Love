@@ -186,6 +186,7 @@ apps:
     debug_protect_runs:
       - 312b80bf4b50    # ops/release/312b80bf4b50/ holds this run's signed release artifacts
       - d8547ff144b4    # ops/release/d8547ff144b4/ holds this run's signed release artifacts
+      - cd29bea37976    # verified 10.9.0 supervised Training release; retain its exact actions log
       - e7b13ac6fd21    # frames cited as fixture provenance by tests/test_hinge_out_of_likes.py
       - a01fbcd1e9a0    # actions.jsonl cited as evidence_ref by tests/test_label_retractions.py
       # Listed after the fact: BOTH of these were destroyed by the first retention pass on
@@ -316,8 +317,7 @@ apps:
     # This schema-v3 mapping was emitted from four calibration and three separately captured
     # held-out profiles using the hybrid AI-reviewed photo-item-1-only workflow. Held-out checks
     # produced zero foreign accepts and zero false refusals. It licenses targeted suggestions in
-    # Training only; the historical production release evidence below does not release AUTO for
-    # this build.
+    # Training; the matching supervised Training release below also licenses AUTO on this build.
     targeting_calibration:
       schema_version: 3
       device: "33111JEHN04475"
@@ -343,28 +343,26 @@ apps:
         detectable by the byte-exactness test. Accepted residual: a video that is not playing at
         all while observed, meaning stalled, buffering, unloaded, or an ended non-looping clip.
         The re-attach probe gives such a card a second trigger before anything is called a photo.
-    # HISTORICAL MANUAL AUTO RELEASE (2026-08-25): this exact legacy production artifact binds
-    # the historical 10.0.1 calibration to run d8547ff144b4. The phone is now on 10.9.0, so
-    # this release artifact does not license AUTO on the live build. The fresh 10.9.0
-    # calibration above licenses Training without a compatibility override. Production
-    # OBSERVE is retired: AUTO now needs a supervised Training run on it verified by
-    # `python -m tools.hinge_training_release`, whose
-    # printed training_release_evidence mapping REPLACES this one (exactly one gate; the artifact
-    # files under ops/release/d8547ff144b4/ stay as the audit record, and the run stays protected
-    # above). The still-photo assumption remains explicitly UNMEASURED and cannot by itself
-    # authorize AUTO.
-    observe_release_evidence:
+    # SUPERVISED TRAINING RELEASE (2026-10-24): tools.hinge_training_release verified manual
+    # Like and Dislike chains plus their persisted labels, decisions and Like opener/send
+    # evidence on the exact calibration above. Its artifact explicitly lists AUTO-only paths
+    # not exercised by Training; watch the first AUTO run. The signed historical release under
+    # ops/release/d8547ff144b4/ remains an audit record and its run stays protected above.
+    # The still-photo assumption remains explicitly UNMEASURED; this separate release licenses
+    # AUTO. Training stays selected until the owner chooses AUTO and Start in the Hub.
+    training_release_evidence:
       schema_version: 1
-      calibration_calibrated_at: "2026-08-22T23:50:45.216285+00:00 — measured from session(s): targeting_20260822T_calA, targeting_20260822T_heldB"
-      calibration_sha256: d6a2a3b4ccb8464f101ae074c247b5bec709462fe87bda41e237453d85dee2ac
+      calibration_calibrated_at: "2026-10-24T06:48:32.179289+00:00 — measured from session(s): targeting_20261024T051219Z_10_9_calibration, targeting_20261024T051219Z_10_9_heldout"
+      calibration_sha256: b3f9705be4950d5ef81ef6fbc6c8b5d3729c2bca234761cb96a5a485726d9c5a
       device: "33111JEHN04475"
-      hinge_version_name: "10.0.1"
+      hinge_version_name: "10.9.0"
       frame_size_px: [1080, 2400]
-      production_run_reference: data/hinge_debug/d8547ff144b4
-      production_run_id: d8547ff144b4
-      verification_file: ops/release/d8547ff144b4/manual-release/hinge_observe_release.json
-      verification_sha256: 95e4f6f7b079e7fbcecca86ceeb480eca129ddaac4ec174d9bc013b3d6255d8c
-      verified_at: "2026-08-25T05:57:05.701897+00:00"
+      production_run_reference: data/hinge_debug/cd29bea37976
+      production_run_id: cd29bea37976
+      debug_actions_sha256: a805f7539805933234e4ce5fe2e5e4245564a72ceaf715badc52d349c3a98df6
+      verification_file: ops/release/cd29bea37976/training-release/hinge_training_release.json
+      verification_sha256: 55e2ea2f0af766908872aa701369983fbdfaef96d1655e28d70d09caeffd17a5
+      verified_at: "2026-10-24T10:36:35.332065+00:00"
 # data_dir does NOT set a general data root today -- nothing in operation_love reads
 # cfg.data_dir directly (an audit found this 2026-09-02). Its one real effect is supplying
 # db_file's default below when db_file is omitted, so overriding data_dir alone still moves

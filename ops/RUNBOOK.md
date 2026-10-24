@@ -221,8 +221,9 @@ print('numbering readiness installed:', tp.hinge_targeting_unavailable_reason() 
 
 While NO licence is installed, every photographic-looking crop remains readable unnumbered
 context and no targeted Training opener can be prepared. Training therefore stops before a
-checkpoint instead of substituting a target. AUTO remains separately blocked behind the legacy
-production release artifact under every licence channel, and an assumption can never license it.
+checkpoint instead of substituting a target. Under every licence channel, AUTO also requires a
+valid exact-build release gate: the supported path is `training_release_evidence` (section 4);
+historical OBSERVE artifacts retain their original bindings. An assumption alone never licenses AUTO.
 Confirmed videos remain fully excluded, while WRITTEN and UNKNOWN crops remain readable
 unnumbered context because neither aspect ratio nor a presumed item count is item-type evidence. Both distance fields must be finite positive numbers. `device` must exactly equal the nonempty
 `apps.hinge.serial` ADB serial; it is a machine-checked binding, not free-form device evidence.
@@ -320,8 +321,9 @@ truth channel, and re-checks the section 4 thresholds before installing anything
 whose numbers disagree with the artifact is fatal, never a warning.
 
 **These numbers install NUMBERING readiness only.** They unblock numbered suggestions in Training
-and in calibration capture, and nothing else. AUTO stays separately blocked behind its own
-historical release artifact (the legacy-named `observe_release_evidence` or the AI-reviewed equivalent), so
+and in calibration capture, and nothing else. AUTO separately requires a valid exact-build release
+gate, now produced through supervised Training and `training_release_evidence` (section 4).
+Historical `observe_release_evidence` and its AI-reviewed equivalent keep their original bindings;
 a weak or fraudulent bound artifact can never enable AUTO by itself. The calibration and
 held-out splits still have to be recaptured afterwards; a bound artifact is a prerequisite for
 those protocols, not a substitute for them.
@@ -868,16 +870,20 @@ from `defer` → ready mid-session. Training never calls the ranker to make the 
 
 ## 4. Go autonomous — auto mode (it swipes for you)
 
-**Current release state (2026-10-24): a fresh exact-build 10.9.0 calibration is installed; AUTO
-remains blocked pending a Training release.** The hybrid AI-reviewed photo-item-1-only campaign
-used four calibration and three separately captured held-out profiles on device `33111JEHN04475`
+**Current release state (2026-10-24): exact-build 10.9.0 calibration and a verified Training release
+are installed; AUTO is available when the owner selects AUTO and Start.** The config remains in
+`mode: training`. The hybrid AI-reviewed photo-item-1-only campaign used four calibration and
+three separately captured held-out profiles on device `33111JEHN04475`
 (1080x2400). The measured bounds are identity `1.3212` and inline item `14.9099`, with zero
 held-out foreign accepts and zero false refusals. The owner renewed the explicitly UNMEASURED
 still-photo assumption for this build/device, and `version_compatibility_review` was removed.
-The config remains in `mode: training`. The historical manual `observe_release_evidence` for
-`d8547ff144b4` remains installed and protected, but binds the 10.0.1 calibration and cannot release
-AUTO on 10.9.0. Production OBSERVE is retired; the remaining supported path is a supervised
-Training release:
+Training run `cd29bea37976` supplied the complete manual Like and Pass chains and database
+persistence; `tools.hinge_training_release` verified it at `2026-10-24T10:36:35Z`.
+The installed `training_release_evidence` points to
+`ops/release/cd29bea37976/training-release/hinge_training_release.json`, and that run is protected
+from debug retention. The historical 10.0.1 manual release for `d8547ff144b4` remains retained and
+protected as audit evidence; its `observe_release_evidence` mapping is no longer installed.
+Production OBSERVE is retired. The reusable release procedure is:
 
 1. **Calibrate the live build (completed for 10.9.0).** After a future update, run a fresh
    targeting campaign on that build (section 2, the hybrid AI-reviewed
@@ -889,10 +895,10 @@ Training release:
 2. **Install it (completed for 10.9.0).** Paste the emitted calibration, re-accept the still-photo
    assumption for the new build (owner decision), and delete `version_compatibility_review`.
    A release binds only an exact-build calibration.
-3. **Record a short Training run** with at least one Like and one Pass on that build. Keep it
-   short: the verifier needs that Like's and that Pass's retained frames, and the retained pool
-   rotates in long sessions.
-4. **Verify it**, still in `mode: training`:
+3. **Record a short Training run (completed by `cd29bea37976`)** with at least one Like and one
+   Pass on that build. Keep it short: the verifier needs that Like's and that Pass's retained
+   frames, and the retained pool rotates in long sessions.
+4. **Verify it (completed for `cd29bea37976`)**, still in `mode: training`:
    `python -m tools.hinge_training_release --config config.yaml --debug-run data/hinge_debug/<run> --run-id <run> --out ops/release/<run>/training-release`.
    The tool needs that run's first rows: the run binding, then a `training_session_environment`
    row whose live build, frame, device and calibration digest match the calibration, with no
@@ -902,11 +908,12 @@ Training release:
    the accepted successor proof, the verified action, and the persisted action. Finally, the
    store must hold the manual label, decision, Like opener and Like send-evidence rows for exactly
    those profiles.
-5. **Install the release.** Paste the printed `training_release_evidence` mapping, remove
-   `observe_release_evidence` (AUTO accepts exactly one gate; `d8547ff144b4` stays protected in
-   `debug_protect_runs` and its `ops/release/` files stay as the audit record), then set
-   `mode: auto`. Config re-hashes the run's `actions.jsonl` at every AUTO start, so that
-   retention-protected log must stay untouched.
+5. **Install the release (completed; owner selection and Start pending).** Paste the printed
+   `training_release_evidence` mapping, remove `observe_release_evidence` (AUTO accepts exactly
+   one gate; `d8547ff144b4` stays protected in
+   `debug_protect_runs` and its `ops/release/` files stay as the audit record). Keep `mode: training`
+   until the owner chooses AUTO and Start in the Hub. Config re-hashes the release run's
+   `actions.jsonl` at every AUTO start, so that retention-protected log must stay untouched.
 
 The Training release proves human-approved, verified Like and Pass chains on the calibrated
 build. It does not exercise three AUTO-only paths, and its artifact says so (`not_exercised`):

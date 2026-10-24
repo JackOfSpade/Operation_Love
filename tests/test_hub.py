@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from operation_love.config import load
 from operation_love.hub import HubState, _Handler, _MAC_UPDATE_RUN, _PAGE, _bind
 
 NODE_BIN = shutil.which("node")
@@ -398,8 +399,8 @@ def test_api_stop_accepts_valid_same_origin_json_and_csrf_token(secured_stop_hub
     assert state.stop_calls == 1
 
 
-def test_hub_endpoints():
-    _Handler.state = HubState("config.yaml")
+def test_hub_endpoints(config_without_hinge_release):
+    _Handler.state = HubState(str(config_without_hinge_release))
     httpd = _bind("127.0.0.1", 8799)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
@@ -413,13 +414,13 @@ def test_hub_endpoints():
 
         code, raw = _get(base, "/api/config")
         cfg = json.loads(raw)
-        assert "mode" in cfg  # config.yaml loads from repo root
+        assert "mode" in cfg
         hinge = next(
             p for kind in cfg["kinds"] for p in kind["platforms"] if p["app"] == "hinge"
         )
         assert hinge["modes"] == {"training": True, "auto": False}
         assert hinge["mode_reasons"]["training"] is None
-        assert "does not bind this calibration" in hinge["mode_reasons"]["auto"]
+        assert "tools.hinge_training_release" in hinge["mode_reasons"]["auto"]
         assert set(hinge["mode_reasons"]) == {"training", "auto"}
 
         code, raw = _get(base, "/api/status")
@@ -3020,8 +3021,31 @@ def test_hubstate_start_rejects_uncalibrated_bumble_in_both_modes(mode):
     assert st.is_running() is False
 
 
-def test_hub_config_combines_registry_and_config_level_mode_readiness():
-    defaults = HubState("config.yaml").config_defaults()
+@pytest.fixture
+def config_without_hinge_release(tmp_path):
+    """A deterministic missing-gate config, independent of installed private release logs."""
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        re.sub(
+            # Keep this line-oriented so it cannot consume later config sections.
+            r"(?m)^    (?:observe_release_evidence|ai_reviewed_observe_release_evidence|"
+            r"training_release_evidence):\n(?:^      [^\n]*\n)+",
+            "",
+            Path("config.yaml").read_text(),
+        )
+    )
+    assert not set(load(cfg_path).apps["hinge"]) & {
+        "observe_release_evidence",
+        "ai_reviewed_observe_release_evidence",
+        "training_release_evidence",
+    }
+    return cfg_path
+
+
+def test_hub_config_combines_registry_and_config_level_mode_readiness(
+    config_without_hinge_release,
+):
+    defaults = HubState(str(config_without_hinge_release)).config_defaults()
     app_platforms = [
         platform
         for kind in defaults["kinds"]
@@ -3035,13 +3059,15 @@ def test_hub_config_combines_registry_and_config_level_mode_readiness():
     # Training and AUTO are the only modes exposed by the Hub.
     assert modes == {"hinge": {"training": True, "auto": False}}
     assert reasons["hinge"]["training"] is None
-    assert "does not bind this calibration" in reasons["hinge"]["auto"]
+    assert "tools.hinge_training_release" in reasons["hinge"]["auto"]
     assert set(reasons["hinge"]) == {"training", "auto"}
     assert set(pending) == {"bumble"}
     assert "not calibrated" in pending["bumble"]["reason"]
 
 
-def test_hub_config_defaults_uses_one_validating_startup_gate_per_mode(monkeypatch):
+def test_hub_config_defaults_uses_one_validating_startup_gate_per_mode(
+    monkeypatch, config_without_hinge_release
+):
     """A config-level AUTO refusal must not fall through to a redundant registry probe."""
     from operation_love.hub import state as hub_state
 
@@ -3055,7 +3081,7 @@ def test_hub_config_defaults_uses_one_validating_startup_gate_per_mode(monkeypat
         return reason
 
     monkeypatch.setattr(hub_state.platforms, "unavailable_reason", record_reason)
-    defaults = HubState("config.yaml").config_defaults()
+    defaults = HubState(str(config_without_hinge_release)).config_defaults()
 
     hinge = next(
         p
@@ -3064,7 +3090,7 @@ def test_hub_config_defaults_uses_one_validating_startup_gate_per_mode(monkeypat
         if p["app"] == "hinge"
     )
     assert hinge["modes"]["auto"] is False
-    assert "does not bind this calibration" in hinge["mode_reasons"]["auto"]
+    assert "tools.hinge_training_release" in hinge["mode_reasons"]["auto"]
     assert auto_reasons == []
 
 
@@ -3106,21 +3132,13 @@ def test_hubstate_start_rejects_two_android_platforms_together(monkeypatch):
 
 
 def test_hubstate_rejects_config_blocked_hinge_auto_before_background_work(
-    monkeypatch, tmp_path
+    monkeypatch, config_without_hinge_release
 ):
     """Hub and direct supervisor starts return the same release-gate message, and the Hub
     rejects before allocating any run thread or timed-stop timer."""
     import operation_love.hub as hub
 
-    cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(
-        re.sub(
-            r"(?m)^    observe_release_evidence:\n(?:^      [^\n]*\n)+",
-            "",
-            Path("config.yaml").read_text(),
-            count=1,
-        )
-    )
+    cfg_path = config_without_hinge_release
     with pytest.raises(ValueError) as direct:
         hub.supervisor.run(str(cfg_path), mode="auto", enabled_apps=["hinge"])
 
@@ -3142,24 +3160,16 @@ def test_hubstate_rejects_config_blocked_hinge_auto_before_background_work(
     assert st._timed_stop_deadline is None
 
 
-def test_hubstate_apps_none_validates_the_effective_file_config(tmp_path):
+def test_hubstate_apps_none_validates_the_effective_file_config(
+    config_without_hinge_release,
+):
     """No app override means config.yaml still receives the synchronous full validation."""
-    cfg_path = tmp_path / "config.yaml"
-    cfg_text = re.sub(
-        # Keep this line-oriented: DOTALL would let ``.*`` swallow the subsequent storage
-        # section and turn this release-gate test into an unrelated storage-config failure.
-        r"(?m)^    observe_release_evidence:\n(?:^      [^\n]*\n)+",
-        "",
-        Path("config.yaml").read_text(),
-        count=1,
-    )
-    # The shipped file intentionally starts in Training while its 10.9.0 production release
-    # is pending (config.yaml's targeting_calibration pins hinge_version_name 10.9.0;
-    # this comment said 10.1.0 long after that moved on). Exercise this test's AUTO release gate
-    # explicitly.
+    cfg_path = config_without_hinge_release
+    cfg_text = cfg_path.read_text()
+    # Training remains the selected mode after installing a release. Remove every release
+    # channel above and request AUTO explicitly to exercise the missing-gate refusal.
     cfg_text = cfg_text.replace("mode: training", "mode: auto", 1)
     cfg_path.write_text(cfg_text)
-
     st = HubState(str(cfg_path))
     ok, msg = st.start(apps=None, stop_after_seconds=60)
 

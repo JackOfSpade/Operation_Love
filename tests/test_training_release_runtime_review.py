@@ -1,9 +1,8 @@
 """Review of the supervised-Training release path against the shipped config.yaml.
 
-These pin what an operator meets on the real file, not on inline YAML: the AUTO refusal they read
-and the retention protection that survives installing the new gate the way the verifier tells
-them to.  Everything here is offline: config is loaded and mutated in memory, and HingeDriver is
-only constructed (no ADB, no touch transport).
+These pin the missing-gate recovery message and the retention protection that survives
+replacing the installed release gate. Everything here is offline: config is loaded and mutated
+in memory, and HingeDriver is only constructed (no ADB, no touch transport).
 """
 
 from __future__ import annotations
@@ -28,12 +27,16 @@ def _shipped_cfg():
     return load(REPO / "config.yaml")
 
 
-def test_shipped_config_auto_refusal_names_the_training_release_tool():
-    """The shipped file keeps the historical 10.0.1 observe gate, so AUTO reaches the old
-    validator and its refusal never mentions the only tool that can now mint release evidence.
-    Production OBSERVE is retired, so that refusal names no step an operator can take."""
+def test_auto_without_a_release_gate_names_the_training_release_tool():
+    """Removing every release channel gives the operator the supported recovery step."""
     cfg = _shipped_cfg()
     assert "mode" not in cfg.apps["hinge"]
+    for key in (
+        "observe_release_evidence",
+        "ai_reviewed_observe_release_evidence",
+        "training_release_evidence",
+    ):
+        cfg.apps["hinge"].pop(key, None)
     cfg.mode = "auto"
     with pytest.raises(ValueError) as refused:
         validate(cfg)
@@ -41,11 +44,11 @@ def test_shipped_config_auto_refusal_names_the_training_release_tool():
 
 
 def test_installing_the_training_gate_keeps_every_signed_release_run_protected():
-    """tools.hinge_training_release tells the operator to remove observe_release_evidence when
-    installing its mapping (AUTO accepts exactly one gate).  That key is the only thing that
-    protects d8547ff144b4 from debug retention: it is not listed in debug_protect_runs because
-    it is derived.  ops/release/<id>/ holds signed artifacts, which is the stated reason
-    312b80bf4b50 is listed, so every such run must stay protected after the swap."""
+    """A replacement removes the installed gate's derived retention protection.
+
+    Every run with signed ops/release artifacts must also remain explicitly protected after
+    that swap, including the historical observe run and the current Training release.
+    """
     cfg = _shipped_cfg()
     hinge_cfg = cfg.apps["hinge"]
     hinge_cfg.pop("observe_release_evidence", None)

@@ -13,6 +13,10 @@ against inline YAML in other test files, never against the file we actually ship
 config.yaml that could not start was therefore fully CI-green.
 """
 
+import hashlib
+import json
+from pathlib import Path
+
 import pytest
 
 from operation_love.config import load, validate
@@ -70,7 +74,7 @@ def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
     assert cfg.hinge_compatible_version is None
 
 
-def test_shipped_config_uses_training_until_live_auto_release_is_renewed(cfg):
+def test_shipped_config_keeps_training_selected_with_installed_auto_release(cfg):
     assert cfg.enabled_apps == ["hinge"] and cfg.mode == "training"
     assert cfg.limits == {}
     # 2026-08-28: shipped on the persistent transport after a live A/B through the real
@@ -80,16 +84,42 @@ def test_shipped_config_uses_training_until_live_auto_release_is_renewed(cfg):
     assert cfg.apps["hinge"]["touch_backend"] == "uhid_persistent"
     assert cfg.apps["hinge"]["touch_backend"] in {"uhid", "uhid_persistent"}
     assert "auto_trial" not in cfg.apps["hinge"]
-    evidence = cfg.apps["hinge"]["observe_release_evidence"]
-    assert evidence["production_run_id"] == "d8547ff144b4"
-    assert evidence["hinge_version_name"] == "10.0.1"
+    hinge = cfg.apps["hinge"]
+    assert "observe_release_evidence" not in hinge
+    assert "ai_reviewed_observe_release_evidence" not in hinge
+    evidence = hinge["training_release_evidence"]
+    calibration = hinge["targeting_calibration"]
+    assert evidence["schema_version"] == 1
+    assert evidence["production_run_id"] == "cd29bea37976"
+    assert evidence["production_run_reference"] == "data/hinge_debug/cd29bea37976"
+    assert evidence["calibration_calibrated_at"] == calibration["calibrated_at"]
+    for key in ("device", "hinge_version_name", "frame_size_px"):
+        assert evidence[key] == calibration[key]
     assert (
-        evidence["hinge_version_name"]
-        != cfg.apps["hinge"]["targeting_calibration"]["hinge_version_name"]
+        evidence["calibration_sha256"]
+        == hashlib.sha256(
+            json.dumps(
+                calibration, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+            ).encode("utf-8")
+        ).hexdigest()
     )
     assert evidence["verification_file"] == (
-        "ops/release/d8547ff144b4/manual-release/hinge_observe_release.json"
+        "ops/release/cd29bea37976/training-release/hinge_training_release.json"
     )
+    content = Path(evidence["verification_file"]).read_bytes()
+    assert hashlib.sha256(content).hexdigest() == evidence["verification_sha256"]
+    artifact = json.loads(content)
+    assert artifact["kind"] == "hinge_supervised_training_release"
+    assert artifact["completed"] is True and artifact["human_ground_truth"] is True
+    assert artifact["source"] == "manual"
+    for key in evidence.keys() & artifact.keys():
+        assert evidence[key] == artifact[key]
+    assert {"d8547ff144b4", "cd29bea37976"} <= set(hinge["debug_protect_runs"])
+    assert Path(
+        "ops/release/d8547ff144b4/manual-release/hinge_observe_release.json"
+    ).is_file()
+    # Private actions.jsonl stays local. Synthetic release tests exercise AUTO validation;
+    # this smoke check binds the shipped public mapping/artifact without requiring that log.
     coords = cfg.apps["bumble"].get("coords", {})
     assert set(coords) == {"swipe_start", "swipe_like_end", "swipe_pass_end"}
     assert "like_heart" not in coords and "pass_x" not in coords

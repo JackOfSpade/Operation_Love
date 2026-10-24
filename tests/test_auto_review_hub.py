@@ -10,6 +10,7 @@ Why each group exists:
 * page -- the card's pure helpers and its answer flow are executed for real under node.
 """
 
+import io
 import json
 import re
 import shutil
@@ -19,6 +20,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -60,13 +62,37 @@ def _pass(pid=PID, kind="random", **over):
     return item
 
 
+def _answer_result(*, would_like=True):
+    return {
+        "kind": "random",
+        "label_source": "auto_review_random",
+        "decision": "dislike",
+        "score": 0.4123,
+        "threshold": 0.4567,
+        "would_like": would_like,
+    }
+
+
 class ReviewStore:
     """A store implementing the review surface; every call is logged in order."""
 
     def __init__(
-        self, *, queue=None, photos=None, stats=None, answer=None, rows=None, undo=None
+        self,
+        *,
+        queue=None,
+        photos=None,
+        stats=None,
+        answer=None,
+        rows=None,
+        undo=None,
+        waiting=None,
     ):
         self.undo = undo
+        self.waiting = (
+            waiting
+            if waiting is not None
+            else {"likes": 25, "random": 6, "near_cut": 6, "total": 37}
+        )
         self.rows = list(
             rows if rows is not None else [(True, [0.1], ""), (False, [0.2], "")]
         )
@@ -89,7 +115,7 @@ class ReviewStore:
         self.calls.append(("answer", profile_id, would_like))
         if self.answer is not None:
             return self.answer(profile_id, would_like)
-        return {"kind": "random", "label_source": "auto_review_random"}
+        return _answer_result(would_like=would_like)
 
     def undo_latest_auto_review(self):
         self.calls.append(("undo",))
@@ -100,6 +126,10 @@ class ReviewStore:
     def auto_review_stats(self, *, app=None):
         self.calls.append(("stats", app))
         return self.stats
+
+    def auto_review_waiting(self, *, app=None):
+        self.calls.append(("waiting", app))
+        return self.waiting
 
     def load_label_rows(self):
         self.calls.append(("rows",))
@@ -136,6 +166,7 @@ def _stats(**over):
         "near_cut_would_like": 0,
         "auto_likes": 10,
         "auto_passes": 30,
+        "likes": {"archived": 30, "reviewed": 25, "agreed": 18},
     }
     stats.update(over)
     return stats
@@ -180,13 +211,27 @@ def _go_live(hub_state, store=None, model=None):
 
 
 # --- validators --------------------------------------------------------------------------------
-@pytest.mark.parametrize("kind", ["random", "near_cut"])
-def test_review_kind_accepts_only_the_two_pools(kind):
+@pytest.mark.parametrize("kind", ["likes", "random", "near_cut"])
+def test_review_kind_accepts_only_the_three_pools(kind):
     assert validate_auto_review_kind(kind) == (True, kind, None)
 
 
 @pytest.mark.parametrize(
-    "bad", [None, "", "Random", "random ", "all", "near-cut", 1, ["random"], b"random"]
+    "bad",
+    [
+        None,
+        "",
+        "Random",
+        "random ",
+        "all",
+        "near-cut",
+        "like",
+        "Likes",
+        1,
+        ["random"],
+        b"random",
+    ],
+    ids=repr,
 )
 def test_review_kind_refuses_anything_else(bad):
     ok, value, error = validate_auto_review_kind(bad)
@@ -297,8 +342,8 @@ def test_next_returns_the_requested_pool_first_and_closes_its_own_store(env):
     code, payload = env.hub.auto_review_next("random")
 
     assert code == 200 and payload["available"] is True
-    assert payload["item"]["profile_id"] == PID and payload["item"]["kind"] == "random"
-    assert payload["fell_back"] is False and payload["requested_kind"] == "random"
+    assert payload["item"]["profile_id"] == PID
+    assert set(payload) == {"available", "item"}
     # Only the preferred pool was asked; nothing else was touched.
     assert [c for c in store.calls if c[0] == "next"] == [("next", "random", None)]
     # An idle hub opens its own READ-ONLY-setup store (no DDL) and closes it after use.
@@ -313,12 +358,46 @@ def test_next_falls_back_to_the_other_pool_in_one_store_session(env):
     code, payload = env.hub.auto_review_next("random")
 
     assert code == 200
-    assert (
-        payload["item"]["profile_id"] == PID2 and payload["item"]["kind"] == "near_cut"
-    )
-    assert payload["fell_back"] is True and payload["requested_kind"] == "random"
+    assert payload["item"]["profile_id"] == PID2
+    assert set(payload) == {"available", "item"}
     assert [c[1] for c in store.calls if c[0] == "next"] == ["random", "near_cut"]
     assert len(env.made) == 1
+
+
+@pytest.mark.parametrize(
+    ("kind", "order"),
+    [
+        ("likes", ["likes", "random", "near_cut"]),
+        ("random", ["random", "near_cut", "likes"]),
+        ("near_cut", ["near_cut", "random", "likes"]),
+    ],
+)
+def test_every_pool_falls_back_to_any_non_empty_one(env, kind, order):
+    """A pass pool tries the other pass pool before the likes (and the likes the random passes
+    first), so likes and passes keep alternating for as long as both exist."""
+    empty = ReviewStore()
+    env.use(lambda: empty)
+    code, payload = env.hub.auto_review_next(kind)
+    assert code == 200 and payload["item"] is None
+    assert [c[1] for c in empty.calls if c[0] == "next"] == order
+
+    last = order[-1]
+    only = ReviewStore(queue={last: _pass(PID2, last)})
+    env.use(lambda: only)
+    code, payload = env.hub.auto_review_next(kind)
+    assert payload["item"]["profile_id"] == PID2
+    assert not {"kind", "decision", "score", "threshold"} & set(payload["item"])
+
+
+def test_next_serves_a_like_from_the_likes_pool(env):
+    store = ReviewStore(queue={"likes": _pass(kind="likes", score=0.61)})
+    env.use(lambda: store)
+
+    code, payload = env.hub.auto_review_next("likes")
+
+    assert code == 200 and payload["item"]["profile_id"] == PID
+    assert not {"kind", "decision", "score", "threshold"} & set(payload["item"])
+    assert [c for c in store.calls if c[0] == "next"] == [("next", "likes", None)]
 
 
 def test_next_with_both_pools_empty_is_an_available_empty_card(env):
@@ -329,9 +408,7 @@ def test_next_with_both_pools_empty_is_an_available_empty_card(env):
     assert code == 200
     assert payload == {
         "available": True,
-        "requested_kind": "near_cut",
         "item": None,
-        "fell_back": False,
     }
 
 
@@ -346,16 +423,13 @@ def test_next_whitelists_the_item_and_survives_non_finite_numbers(env):
     assert code == 200
     assert set(payload["item"]) == {
         "profile_id",
-        "kind",
         "app",
         "run_id",
         "created_at",
-        "score",
-        "threshold",
         "photo_count",
         "profile_name",
     }
-    assert payload["item"]["score"] is None and payload["item"]["threshold"] is None
+    assert not {"decision", "score", "threshold", "kind"} & set(payload["item"])
     json.dumps(payload, allow_nan=False)
 
 
@@ -578,7 +652,7 @@ def test_answer_records_flushes_then_reports_and_closes(env):
     )
 
     assert (ok, code, msg) == (True, 200, "recorded")
-    assert result == {"kind": "random", "label_source": "auto_review_random"}
+    assert result == _answer_result()
     # The label is made durable BEFORE success is reported; close follows.
     assert [c[0] for c in store.calls] == ["answer", "flush", "close"]
     assert store.calls[0] == ("answer", PID, True)
@@ -769,7 +843,7 @@ def test_concurrent_answers_for_one_pass_record_exactly_one_label(env):
         entered.set()
         time.sleep(0.05)  # widen the race window
         answered.add(profile_id)
-        return {"kind": "random", "label_source": "auto_review_random"}
+        return _answer_result(would_like=would_like)
 
     env.use(lambda: ReviewStore(answer=answer))
     results = []
@@ -827,7 +901,40 @@ def test_stats_with_the_live_runs_model_compares_measured_to_expected(env):
     assert summary["observed_false_pass_lower"] > 0.05
     assert summary["verdict"] == "above"
     assert payload["store"]["pending_near_cut"] == 7
+    # The likes are a separate, display-only section: the false-pass summary never counts them.
+    assert payload["likes"] == {"archived": 30, "reviewed": 25, "agreed": 18}
+    assert "likes" not in summary
     json.dumps(payload, allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    ("likes", "expected"),
+    [
+        (None, None),
+        ("garbage", None),
+        ({}, {"archived": 0, "reviewed": 0, "agreed": 0}),
+        (
+            {"archived": 3, "reviewed": 2, "agreed": 9},
+            {"archived": 3, "reviewed": 2, "agreed": 2},
+        ),
+        (
+            {"archived": True, "reviewed": -1, "agreed": "x"},
+            {"archived": 0, "reviewed": 0, "agreed": 0},
+        ),
+    ],
+    ids=["absent", "not-a-dict", "empty", "agreed-capped", "garbage-counts"],
+)
+def test_likes_summary_is_read_from_the_stores_separate_section(likes, expected):
+    stats = _stats()
+    if likes is None:
+        stats.pop("likes")
+    else:
+        stats["likes"] = likes
+    assert HubState._review_likes_summary(stats) == expected
+    # and the false-pass comparison is the same whatever the likes section says
+    assert HubState._review_summary(stats, None) == HubState._review_summary(
+        {k: v for k, v in stats.items() if k != "likes"}, None
+    )
 
 
 @pytest.mark.parametrize(
@@ -870,6 +977,7 @@ def test_stats_on_a_store_without_the_surface_say_unavailable(env):
     assert code == 200 and payload["available"] is False
     assert "auto_review_stats" in payload["reason"]
     assert payload["summary"] is None and payload["store"] is None
+    assert payload["likes"] is None
 
 
 def test_stats_storage_failure_is_a_502_with_the_cause(env):
@@ -1537,11 +1645,11 @@ def test_review_flow_against_the_real_sqlite_store(tmp_path, monkeypatch):
         {"profile_id": PID, "would_like": True}
     )
     assert (ok, code) == (True, 200)
-    assert result == {"kind": "random", "label_source": "auto_review_random"}
+    assert result == dict(_answer_result(), score=0.3, threshold=0.5)
 
     # An answered pass is gone; the empty random pool falls back to the near-cut one.
     code, payload = state.auto_review_next("random")
-    assert payload["item"]["profile_id"] == PID2 and payload["fell_back"] is True
+    assert payload["item"]["profile_id"] == PID2
     # A second answer to the same pass, and an answer for a pass that never existed, are
     # conflicts that retire the card rather than becoming a second label.
     for pid in (PID, "ab" * 16):
@@ -1757,7 +1865,7 @@ def test_http_answer_requires_the_csrf_token_and_a_real_boolean(served):
     )
     payload = json.loads(body)
     assert status == 200 and payload["ok"] is True
-    assert payload["result"] == {"kind": "random", "label_source": "auto_review_random"}
+    assert payload["result"] == _answer_result()
     assert [c[0] for c in store_log[0].calls] == ["answer", "flush", "close"]
 
 
@@ -1861,7 +1969,13 @@ _PURE = [
     "autoReviewPercent",
     "autoReviewScore",
     "autoReviewImageUrl",
-    "autoReviewKindLabel",
+    "autoReviewPoolKind",
+    "autoReviewCardsUrl",
+    "autoReviewCardUrl",
+    "autoReviewPhotosHtml",
+    "autoReviewRevealText",
+    "autoReviewWaitingText",
+    "autoReviewAgreementText",
     "autoReviewSourceLabel",
     "autoReviewSummaryHtml",
     "autoReviewItemHtml",
@@ -1872,50 +1986,105 @@ def _pure_js():
     return "\n".join(_extract(name) for name in _PURE) + "\n"
 
 
-def test_the_card_alternates_the_two_pools():
+def test_the_card_cycles_likes_random_likes_near_cut():
     out = _node(
         _pure_js()
-        + "console.log(JSON.stringify([nextAutoReviewKind('random'), nextAutoReviewKind('near_cut'),"
-        " nextAutoReviewKind(undefined)]));"
+        + """
+      const order = ['likes']; let lastPass = null;
+      for (let k=0; k<7; k++) {
+        const next = nextAutoReviewKind(order[order.length-1], lastPass);
+        if (next !== 'likes') lastPass = next;
+        order.push(next);
+      }
+      console.log(JSON.stringify(order));
+    """
     )
-    assert out == ["near_cut", "random", "random"]
+    assert out == ["likes", "random", "likes", "near_cut"] * 2
 
 
-def test_the_item_html_has_one_image_per_photo_and_escapes_hostile_text():
-    item = {
-        "profile_id": PID,
-        "kind": "near_cut",
-        "app": "hinge",
-        "created_at": 1_700_000_000,
-        "score": 0.41,
-        "threshold": 0.45,
-        "photo_count": 3,
-        "profile_name": '<img src=x onerror="alert(1)">',
-    }
+def test_item_html_is_neutral_and_escapes_hostile_text():
+    item = _pass(
+        kind="likes", score=0.61, profile_name='<img src=x onerror="alert(1)">'
+    )
     out = _node(
         _pure_js()
         + f"console.log(JSON.stringify(autoReviewItemHtml({json.dumps(item)})));"
     )
-    assert out.count("<img src=") == 3  # the hostile name is text, not a 4th image
-    for i in range(3):
-        assert f"/api/auto-review/image?profile_id={PID}&amp;index={i}" in out or (
-            f"/api/auto-review/image?profile_id={PID}&index={i}" in out
-        )
-    assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in out
-    assert "NEAR THE CUT" in out and "0.4100" in out and "0.4500" in out
-    assert "(0.0400 below)" in out
+    assert "alert" not in out and "hinge" not in out
+    assert "Loading the photos" in out and "<img src=" not in out
+    for leak in (
+        "0.6100",
+        "0.4567",
+        "NEAR THE CUT",
+        "RANDOM SAMPLE",
+        "liked",
+        "passed",
+    ):
+        assert leak not in out
 
 
-def test_the_item_html_without_photos_or_an_item():
+def test_photo_html_has_one_card_per_photo_and_explicit_screenshot_fallback():
+    item = _pass()
     out = _node(
-        _pure_js() + "console.log(JSON.stringify([autoReviewItemHtml(null),"
-        " autoReviewItemHtml({profile_id:'"
-        + PID
-        + "',kind:'random',photo_count:0,profile_name:''})]));"
+        _pure_js()
+        + f"""
+      const item = {json.dumps(item)};
+      console.log(JSON.stringify([
+        autoReviewPhotosHtml(item, {{available:true, cards:[{{width:200,height:300}},{{width:300,height:400}}]}}),
+        autoReviewPhotosHtml(item, {{available:true, fallback:'NoPhotoCards: <missing>'}}),
+        autoReviewPhotosHtml(item, {{available:false, reason:'store failed'}}),
+        autoReviewPhotosHtml({{photo_count:0}}, {{available:true, fallback:'no frames'}}),
+        autoReviewItemHtml(null)
+      ]));
+    """
     )
-    assert "Nothing is waiting for review" in out[0]
-    assert "no stored screenshots" in out[1] and "<img" not in out[1]
-    assert "Unnamed profile" in out[1] and "RANDOM SAMPLE" in out[1]
+    assert out[0].count("<img src=") == 2
+    for i in range(2):
+        assert f"/api/auto-review/card?profile_id={PID}&amp;index={i}" in out[0]
+        assert f"Photo {i + 1} of 2" in out[0]
+    assert "Showing the full screenshots" in out[1] and "&lt;missing&gt;" in out[1]
+    assert out[1].count("<img src=") == 3 and "/api/auto-review/image?" in out[1]
+    assert "Could not load the photos" in out[2] and "<img" not in out[2]
+    assert "no stored screenshots" in out[3] and "<img" not in out[3]
+    assert "Nothing is waiting for review" in out[4]
+
+
+def test_reveal_uses_the_saved_decision_and_answer_for_every_combination():
+    out = _node(
+        _pure_js()
+        + """
+      console.log(JSON.stringify(['like','dislike'].flatMap(decision => [true,false].map(would_like =>
+        autoReviewRevealText({decision,would_like,score:0.61,threshold:0.5})))));
+    """
+    )
+    assert out == [
+        "The bot liked this profile (score 0.6100, cutoff 0.5000). You agreed.",
+        "The bot liked this profile (score 0.6100, cutoff 0.5000). You disagreed.",
+        "The bot passed this profile (score 0.6100, cutoff 0.5000). You disagreed.",
+        "The bot passed this profile (score 0.6100, cutoff 0.5000). You agreed.",
+    ]
+
+
+def test_waiting_badge_and_like_agreement_are_passive_counts():
+    out = _node(
+        _pure_js()
+        + """
+      console.log(JSON.stringify([
+        autoReviewWaitingText({available:true,waiting:{likes:25,random:6,near_cut:6,total:37}}),
+        autoReviewWaitingText({available:true,waiting:{likes:0,random:0,near_cut:0,total:0}}),
+        autoReviewWaitingText({available:false}),
+        autoReviewAgreementText({reviewed:25,agreed:18}),
+        autoReviewAgreementText({reviewed:0,agreed:0})
+      ]));
+    """
+    )
+    assert out == [
+        "37 waiting: 25 likes, 6 random passes, 6 near the cut",
+        "nothing waiting",
+        "waiting count unavailable",
+        "You agreed with 18 of 25 reviewed likes",
+        "",
+    ]
 
 
 def test_the_image_url_encodes_its_parameters():
@@ -1961,10 +2130,10 @@ def _stats_payload(verdict, **over):
 def test_the_summary_shows_measured_against_expected_and_each_verdict():
     above = _summary(_stats_payload("above"))
     assert "25.0%" in above and "10 of 40" in above and "predicted 5.0%" in above
-    assert "4 random sample" in above and "7 near the cut" in above
     assert "raised" in above and "15.0%" in above
     assert "Recall target 95.0%" in above and "effective 96.0%" in above
-    assert "0.4712" in above and "the running bot" in above
+    assert "0.4712" not in above and "like threshold" not in above
+    assert "the running bot" in above
 
     assert "In line with what the model predicted" in _summary(_stats_payload("within"))
     insufficient = _summary(_stats_payload("insufficient"))
@@ -2009,7 +2178,7 @@ def test_every_element_the_cards_script_looks_up_exists_in_the_markup():
 def test_the_card_is_informational_green_and_offers_no_skip():
     card = _PAGE[_PAGE.index('id="autoreviewcard"') : _PAGE.index("live log")]
     assert "🟢" in card and "🔴" not in card
-    assert ">Would have liked<" in card and ">Correct pass<" in card
+    assert ">Like<" in card and ">Dislike<" in card
     assert (
         "skip"
         not in re.sub(
@@ -2028,6 +2197,8 @@ def test_the_card_is_informational_green_and_offers_no_skip():
         "renderGlobal",
         "runbanner",
         "runpill",
+        "Notification",
+        "requestPermission",
     ):
         assert forbidden not in script
     assert 'class="stop"' not in script and 'class="danger"' not in card
@@ -2039,9 +2210,11 @@ function mk(id){ return els[id] = els[id] || {innerHTML:'', textContent:'', disa
   querySelectorAll(){ return []; }, addEventListener(){} }; }
 const $ = sel => mk(sel);
 let _autoReviewItem = null, _autoReviewKind = 'random', _autoReviewBusy = false,
-    _autoReviewRequest = 0, _autoReviewStatsRequest = 0, _autoReviewStatsTimer = null;
+    _autoReviewRequest = 0, _autoReviewStatsRequest = 0, _autoReviewStatsTimer = null,
+    _autoReviewLastPassKind = null, _autoReviewPhotosReady = true, _autoReviewNext = null,
+    _autoReviewPrefetchRequest = 0, _autoReviewRevealMs = 0;
 const log = [];
-let nextResponses = [], postResponse = {ok:true, result:{kind:'random'}}, postGate = null;
+let nextResponses = [], postResponse = {ok:true, result:{kind:'random',decision:'dislike',score:0.4,threshold:0.5,would_like:true}}, postGate = null;
 async function getJSON(url){ log.push(['GET', url]); return nextResponses.shift(); }
 async function postJSON(url, body){
   log.push(['POST', url, body]);
@@ -2049,6 +2222,10 @@ async function postJSON(url, body){
   return postResponse;
 }
 function refreshAutoReviewStats(){ log.push(['STATS']); }
+function refreshAutoReviewWaiting(){ log.push(['WAITING']); }
+function prefetchAutoReview(){}
+async function loadAutoReviewPhotos(){ _autoReviewPhotosReady = true; }
+function autoReviewPause(){ return Promise.resolve(); }
 """
 
 
@@ -2059,7 +2236,13 @@ def _flow(scenario):
         "autoReviewPercent",
         "autoReviewScore",
         "autoReviewImageUrl",
-        "autoReviewKindLabel",
+        "autoReviewPoolKind",
+        "autoReviewCardsUrl",
+        "autoReviewCardUrl",
+        "autoReviewPhotosHtml",
+        "autoReviewRevealText",
+        "autoReviewWaitingText",
+        "autoReviewAgreementText",
         "autoReviewSourceLabel",
         "autoReviewSummaryHtml",
         "autoReviewItemHtml",
@@ -2095,12 +2278,13 @@ def test_answering_posts_the_boolean_then_loads_the_other_pool_and_refreshes_sta
     )
     assert out["log"] == [
         ["POST", "/api/auto-review/answer", {"profile_id": PID, "would_like": True}],
-        ["GET", "/api/auto-review/next?kind=near_cut"],
+        ["GET", "/api/auto-review/next?kind=likes"],
         ["STATS"],
+        ["WAITING"],
     ]
-    assert out["item"]["profile_id"] == PID2 and out["kind"] == "near_cut"
+    assert out["item"]["profile_id"] == PID2 and out["kind"] == "likes"
     assert out["busy"] is False
-    assert out["hint"] == "saved as liked"
+    assert out["hint"] == "saved as Like"
 
 
 def test_a_correct_pass_posts_false_and_alternates_back_to_random():
@@ -2117,7 +2301,7 @@ def test_a_correct_pass_posts_false_and_alternates_back_to_random():
         "/api/auto-review/answer",
         {"profile_id": PID2, "would_like": False},
     ]
-    assert out["log"][1] == ["GET", "/api/auto-review/next?kind=random"]
+    assert out["log"][1] == ["GET", "/api/auto-review/next?kind=likes"]
     # The empty next pool is the more important thing to say; it is not overwritten.
     assert out["hint"] == "nothing to review"
 
@@ -2148,7 +2332,7 @@ def test_a_retired_pass_moves_on_instead_of_sticking():
         console.log(JSON.stringify({{log, item:_autoReviewItem.profile_id}}));
         """
     )
-    assert [e[0] for e in out["log"]] == ["POST", "GET", "STATS"]
+    assert [e[0] for e in out["log"]] == ["POST", "GET", "STATS", "WAITING"]
     assert out["item"] == PID2
 
 
@@ -2185,13 +2369,13 @@ def test_a_recorded_answer_still_says_what_was_saved():
     out = _flow(
         f"""
         _autoReviewItem = {json.dumps(_ITEM_RANDOM)};
-        postResponse = {{ok:true, result:{{kind:'random'}}}};
+        postResponse = {{ok:true, result:{{kind:'random',decision:'dislike',score:0.4,threshold:0.5,would_like:false}}}};
         nextResponses = [{{available:true, item:{json.dumps(_ITEM_NEAR)}}}];
         await answerAutoReview(false);
         console.log(JSON.stringify({{hint:els['#autoreviewhint'].textContent}}));
         """
     )
-    assert out["hint"] == "saved as a pass"
+    assert out["hint"] == "saved as Dislike"
 
 
 def test_undo_posts_nothing_but_the_request_then_reloads_the_pool_the_person_came_from():
@@ -2208,6 +2392,7 @@ def test_undo_posts_nothing_but_the_request_then_reloads_the_pool_the_person_cam
         ["POST", "/api/auto-review/undo", {}],
         ["GET", "/api/auto-review/next?kind=near_cut"],
         ["STATS"],
+        ["WAITING"],
     ]
     assert out["hint"] == "undid your answer for Avery; they are back in the queue"
     assert out["busy"] is False and out["undoDisabled"] is False
@@ -2310,3 +2495,565 @@ def test_a_slow_older_load_cannot_overwrite_a_newer_one():
         """
     )
     assert out == {"item": PID2}
+
+
+# --- photo review display, cache and passive counts -------------------------------------------
+def test_review_cards_preserve_order_encode_jpegs_and_leave_like_button_visible(
+    monkeypatch,
+):
+    import numpy as np
+    from PIL import Image
+
+    import operation_love.hub.state as state_mod
+    import operation_love.vision.photo_cards as photo_mod
+
+    calls = []
+    pixels = [
+        np.full((30, 20, 3), (200, 20, 30), dtype=np.uint8),
+        np.full((20, 40, 3), (20, 200, 30), dtype=np.uint8),
+    ]
+
+    def cut(frames, *, paint_like_button):
+        calls.append((frames, paint_like_button))
+        return SimpleNamespace(cards=[SimpleNamespace(pixels=p) for p in pixels])
+
+    monkeypatch.setattr(photo_mod, "extract_photo_cards", cut)
+    cards = state_mod._cut_review_cards([b"frame1", b"frame2"])
+    assert calls == [([b"frame1", b"frame2"], False)]
+    assert cards.sizes == ((20, 30), (40, 20)) and cards.frame_count == 2
+    assert cards.fallback is None
+    for data, size, channel in zip(cards.images, cards.sizes, (0, 1), strict=True):
+        image = Image.open(io.BytesIO(data))
+        assert image.format == "JPEG" and image.size == size
+        assert image.getpixel((1, 1))[channel] > 180
+
+
+@pytest.mark.parametrize("failure", ["PhotoCardsError", "NoPhotoCards", "empty"])
+def test_expected_card_failures_fall_back_to_full_screenshots(monkeypatch, failure):
+    import operation_love.hub.state as state_mod
+    import operation_love.vision.photo_cards as photo_mod
+
+    def cut(*args, **kwargs):
+        if failure == "empty":
+            return SimpleNamespace(cards=[])
+        raise getattr(photo_mod, failure)("synthetic frames")
+
+    monkeypatch.setattr(photo_mod, "extract_photo_cards", cut)
+    cards = state_mod._cut_review_cards([PNG])
+    assert not cards.images and cards.frame_count == 1 and cards.fallback
+    assert state_mod._cut_review_cards([]).frame_count == 0
+    assert (
+        state_mod._cut_review_cards([]).fallback
+        == "this profile has no stored screenshots"
+    )
+
+
+def test_unexpected_card_errors_fail_loudly_and_can_be_retried(env, monkeypatch):
+    import operation_love.hub.state as state_mod
+
+    import operation_love.vision.photo_cards as photo_mod
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("crop bug")
+
+    monkeypatch.setattr(photo_mod, "extract_photo_cards", broken)
+    with pytest.raises(RuntimeError, match="crop bug"):
+        state_mod._cut_review_cards([PNG])
+    monkeypatch.setattr(env.hub, "_load_review_frames", lambda _: [PNG])
+    monkeypatch.setattr(state_mod, "_cut_review_cards", broken)
+    code, payload = env.hub.auto_review_cards(PID)
+    assert (
+        code == 502
+        and payload["available"] is False
+        and "crop bug" in payload["reason"]
+    )
+    assert not env.hub._review_cards_inflight and not env.hub._review_cards_cache
+    expected = state_mod._ReviewCards((b"jpeg",), ((20, 30),), 1)
+    monkeypatch.setattr(state_mod, "_cut_review_cards", lambda _: expected)
+    assert env.hub.auto_review_card_image(PID, 0) == (200, b"jpeg", "image/jpeg")
+
+
+def test_card_cache_is_memory_only_bounded_lru_and_single_flight(
+    env, monkeypatch, tmp_path
+):
+    import operation_love.hub.state as state_mod
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(state_mod, "_REVIEW_CARDS_CACHE_PROFILES", 2)
+    cuts = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    def load(pid):
+        cuts.append(pid)
+        entered.set()
+        assert release.wait(_LIVENESS_TIMEOUT_S)
+        return [PNG]
+
+    expected = state_mod._ReviewCards((b"jpeg",), ((20, 30),), 1)
+    monkeypatch.setattr(env.hub, "_load_review_frames", load)
+    monkeypatch.setattr(state_mod, "_cut_review_cards", lambda _: expected)
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(env.hub._review_cards, PID)
+        assert entered.wait(_LIVENESS_TIMEOUT_S)
+        pending = env.hub._review_cards_inflight[PID]
+        waiting = threading.Event()
+        real_wait = pending.wait
+
+        def wait(*args, **kwargs):
+            waiting.set()
+            return real_wait(*args, **kwargs)
+
+        pending.wait = wait
+        second = pool.submit(env.hub._review_cards, PID)
+        try:
+            assert waiting.wait(_LIVENESS_TIMEOUT_S)
+        finally:
+            release.set()
+        assert first.result(_LIVENESS_TIMEOUT_S) is expected
+        assert second.result(_LIVENESS_TIMEOUT_S) is expected
+    assert cuts == [PID]
+    env.hub._review_cards(PID2)
+    env.hub._review_cards(PID)  # touch: PID2 is now the oldest
+    third = "ab" * 16
+    env.hub._review_cards(third)
+    assert list(env.hub._review_cards_cache) == [PID, third]
+    env.hub._review_cards(PID2)  # evicted profile is cut again
+    assert cuts == [PID, PID2, third, PID2]
+    assert not env.hub._review_cards_inflight
+    assert not list(tmp_path.iterdir())
+
+
+def test_distinct_profile_cuts_have_bounded_concurrency(env, monkeypatch):
+    import operation_love.hub.state as state_mod
+
+    entered = threading.Event()
+    release = threading.Event()
+    lock = threading.Lock()
+    active = peak = 0
+    slots = state_mod._REVIEW_CARDS_CONCURRENT_CUTS
+
+    def load(_pid):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            if active == slots:
+                entered.set()
+        assert release.wait(_LIVENESS_TIMEOUT_S)
+        with lock:
+            active -= 1
+        return [PNG]
+
+    monkeypatch.setattr(env.hub, "_load_review_frames", load)
+    monkeypatch.setattr(
+        state_mod,
+        "_cut_review_cards",
+        lambda _: state_mod._ReviewCards((), (), 1, "fallback"),
+    )
+    with ThreadPoolExecutor(slots + 2) as pool:
+        jobs = [
+            pool.submit(env.hub._review_cards, f"{i:032x}") for i in range(slots + 2)
+        ]
+        assert entered.wait(_LIVENESS_TIMEOUT_S)
+        # All extra callers have registered their requests while the active cuts are blocked.
+        deadline = time.monotonic() + _LIVENESS_TIMEOUT_S
+        while (
+            len(env.hub._review_cards_inflight) < slots + 2
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.001)
+        assert len(env.hub._review_cards_inflight) == slots + 2
+        try:
+            with lock:
+                assert active == slots
+        finally:
+            release.set()
+        for job in jobs:
+            job.result(_LIVENESS_TIMEOUT_S)
+    assert peak == slots
+
+
+def test_waiting_counts_are_cached_invalidated_by_answer_and_undo(env):
+    store = ReviewStore(undo={"profile_id": PID, "kind": "likes"})
+    env.use(lambda: store)
+    code, first = env.hub.auto_review_waiting_snapshot()
+    assert code == 200 and first["waiting"] == {
+        "likes": 25,
+        "random": 6,
+        "near_cut": 6,
+        "total": 37,
+    }
+    first["waiting"]["likes"] = 1000  # clients cannot mutate the shared snapshot
+    assert env.hub.auto_review_waiting_snapshot()[1]["waiting"]["likes"] == 25
+    assert sum(c[0] == "waiting" for c in store.calls) == 1
+    assert env.hub.submit_auto_review_answer({"profile_id": PID, "would_like": False})[
+        0
+    ]
+    env.hub.auto_review_waiting_snapshot()
+    assert sum(c[0] == "waiting" for c in store.calls) == 2
+    assert env.hub.undo_auto_review_answer()[0]
+    env.hub.auto_review_waiting_snapshot()
+    assert sum(c[0] == "waiting" for c in store.calls) == 3
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        None,
+        [],
+        {},
+        {"likes": True, "random": 0, "near_cut": 0, "total": 1},
+        {"likes": -1, "random": 0, "near_cut": 0, "total": -1},
+        {"likes": 1.5, "random": 0, "near_cut": 0, "total": 1.5},
+        {"likes": 1, "random": 0, "near_cut": 0, "total": 2},
+    ],
+)
+def test_waiting_malformed_counts_are_unavailable(env, bad):
+    store = ReviewStore()
+    store.waiting = bad
+    env.use(lambda: store)
+    code, payload = env.hub.auto_review_waiting_snapshot()
+    assert code == 502 and payload["available"] is False and payload["waiting"] is None
+
+
+def test_waiting_old_query_cannot_repopulate_cache_after_invalidation(env):
+    entered = threading.Event()
+    release = threading.Event()
+    store = ReviewStore()
+
+    def waiting(*, app):
+        entered.set()
+        assert release.wait(_LIVENESS_TIMEOUT_S)
+        return {"likes": 25, "random": 6, "near_cut": 6, "total": 37}
+
+    store.auto_review_waiting = waiting
+    env.use(lambda: store)
+    with ThreadPoolExecutor(1) as pool:
+        pending = pool.submit(env.hub.auto_review_waiting_snapshot)
+        assert entered.wait(_LIVENESS_TIMEOUT_S)
+        env.hub._invalidate_review_waiting()
+        release.set()
+        assert pending.result(_LIVENESS_TIMEOUT_S)[0] == 200
+    assert env.hub._review_waiting_cache is None
+
+
+def test_http_cards_waiting_and_jpegs_use_validated_uncached_routes(
+    served, monkeypatch
+):
+    import operation_love.hub.state as state_mod
+
+    served.env.use(lambda: ReviewStore(photos={(PID, 0): PNG, (PID, 1): PNG}))
+    monkeypatch.setattr(
+        state_mod,
+        "_cut_review_cards",
+        lambda frames: state_mod._ReviewCards((b"jpeg",), ((20, 30),), len(frames)),
+    )
+    base = served.base
+    status, headers, body = _call(
+        "GET", base + f"/api/auto-review/cards?profile_id={PID}"
+    )
+    payload = json.loads(body)
+    assert status == 200 and payload["frame_count"] == 2
+    assert payload["cards"] == [{"index": 0, "width": 20, "height": 30}]
+    assert headers["Cache-Control"] == "no-store"
+    status, headers, body = _call(
+        "GET", base + f"/api/auto-review/card?profile_id={PID}&index=0"
+    )
+    assert status == 200 and body == b"jpeg" and headers["Content-Type"] == "image/jpeg"
+    assert (
+        headers["Cache-Control"] == "no-store"
+        and headers["X-Content-Type-Options"] == "nosniff"
+    )
+    assert (
+        _call("GET", base + f"/api/auto-review/card?profile_id={PID}&index=1")[0] == 404
+    )
+    for path in (
+        "/cards?profile_id=../secret",
+        "/cards",
+        f"/cards?profile_id={PID}&profile_id={PID2}",
+        f"/card?profile_id={PID}&index=-1",
+        f"/card?profile_id={PID}",
+    ):
+        assert _call("GET", base + "/api/auto-review" + path)[0] == 400
+    status, _, body = _call("GET", base + "/api/auto-review/waiting")
+    assert status == 200 and json.loads(body)["waiting"]["total"] == 37
+
+
+def _real_photo_flow(scenario):
+    real = "\n".join(
+        _extract(n) for n in ("loadAutoReviewPhotos", "prefetchAutoReview")
+    )
+    # Later declarations replace the harness stubs, so these tests execute the real image and
+    # background fetch logic while retaining the same minimal DOM as the other render tests.
+    return _node(
+        _FLOW_HARNESS
+        + _pure_js()
+        + _extract("setAutoReviewButtons")
+        + real
+        + "\n(async () => {\n"
+        + scenario
+        + "\n})();"
+    )
+
+
+def test_answers_wait_for_every_photo_and_reject_broken_images():
+    out = _real_photo_flow(f"""
+      _autoReviewItem = {json.dumps(_ITEM_RANDOM)}; _autoReviewPhotosReady = false;
+      const handlers = [{{}}, {{}}];
+      const images = handlers.map(h => ({{complete:false, addEventListener(n,cb){{h[n]=cb;}}}}));
+      mk('#autoreviewphotos').querySelectorAll = () => images;
+      const pending = loadAutoReviewPhotos(_autoReviewItem, {{available:true,frame_count:1,cards:[{{}},{{}}]}}, 0);
+      setAutoReviewButtons(); const before = els['#autoreviewlike'].disabled;
+      handlers[0].load(); await Promise.resolve(); const partial = _autoReviewPhotosReady;
+      handlers[1].load(); await pending; const ready = _autoReviewPhotosReady;
+      _autoReviewPhotosReady = false;
+      const broken = loadAutoReviewPhotos(_autoReviewItem, {{available:true,frame_count:1,cards:[{{}}]}}, 0);
+      handlers[0].error(); handlers[1].load(); await broken;
+      console.log(JSON.stringify({{before,partial,ready,broken:_autoReviewPhotosReady,
+        disabled:els['#autoreviewlike'].disabled,hint:els['#autoreviewhint'].textContent}}));
+    """)
+    assert out["before"] is True and out["partial"] is False and out["ready"] is True
+    assert out["broken"] is False and out["disabled"] is True
+    assert "photo could not be loaded" in out["hint"]
+
+
+@pytest.mark.parametrize("count", [0, 1, 2])
+def test_incomplete_archived_frames_never_enable_an_answer(count):
+    out = _real_photo_flow(f"""
+      _autoReviewItem = {{profile_id:'{PID}',photo_count:3}};
+      _autoReviewPhotosReady = false;
+      mk('#autoreviewphotos').querySelectorAll = () => [];
+      await loadAutoReviewPhotos(_autoReviewItem, {{available:true,frame_count:{count},cards:[{{}}]}}, 0);
+      console.log(JSON.stringify({{ready:_autoReviewPhotosReady, html:els['#autoreviewphotos'].innerHTML,
+        disabled:els['#autoreviewlike'].disabled}}));
+    """)
+    assert out["ready"] is False and out["disabled"] is True
+    assert (
+        "archived screenshots are incomplete" in out["html"]
+        and "<img" not in out["html"]
+    )
+
+
+def test_loaded_image_fast_path_and_stale_crop_response():
+    out = _real_photo_flow(f"""
+      _autoReviewItem = {json.dumps(_ITEM_RANDOM)}; _autoReviewPhotosReady = false;
+      const photos = mk('#autoreviewphotos');
+      photos.querySelectorAll = () => [{{complete:true,naturalWidth:200,addEventListener(){{}}}}];
+      await loadAutoReviewPhotos(_autoReviewItem, {{available:true,frame_count:1,cards:[{{}}]}}, 0);
+      const fast = _autoReviewPhotosReady;
+      photos.innerHTML = 'new profile'; _autoReviewPhotosReady = false; _autoReviewRequest = 1;
+      await loadAutoReviewPhotos(_autoReviewItem, {{available:true,frame_count:1,cards:[{{}}]}}, 0);
+      console.log(JSON.stringify({{fast,ready:_autoReviewPhotosReady,html:photos.innerHTML}}));
+    """)
+    assert out == {"fast": True, "ready": False, "html": "new profile"}
+
+
+def test_prefetch_loads_the_next_pool_and_crops_in_background_without_revealing_it():
+    out = _real_photo_flow(f"""
+      _autoReviewKind = 'likes'; _autoReviewLastPassKind = 'random';
+      nextResponses = [{{available:true,item:{{profile_id:'{PID2}',photo_count:2}}}},
+                       {{available:true,frame_count:2,cards:[{{width:20,height:30}}]}}];
+      await prefetchAutoReview({{profile_id:'{PID}'}});
+      console.log(JSON.stringify({{log,next:_autoReviewNext}}));
+    """)
+    assert out["log"] == [
+        ["GET", "/api/auto-review/next?kind=near_cut"],
+        ["GET", f"/api/auto-review/cards?profile_id={PID2}"],
+    ]
+    assert out["next"]["kind"] == "near_cut" and out["next"]["item"] == {
+        "profile_id": PID2,
+        "photo_count": 2,
+    }
+    assert out["next"]["cards"]["frame_count"] == 2
+
+
+def test_prefetch_discards_old_same_profile_and_failed_selections():
+    out = _real_photo_flow(f"""
+      nextResponses = [{{available:true,item:{{profile_id:'{PID}'}}}}];
+      await prefetchAutoReview({{profile_id:'{PID}'}}); const same = _autoReviewNext;
+      let release; const gate = new Promise(r => release = r);
+      getJSON = async () => {{ await gate; return {{available:true,item:{{profile_id:'{PID2}'}}}}; }};
+      const stale = prefetchAutoReview({{profile_id:'{PID}'}});
+      ++_autoReviewPrefetchRequest; release(); await stale;
+      const old = _autoReviewNext;
+      getJSON = async () => {{throw new Error('offline');}};
+      await prefetchAutoReview({{profile_id:'{PID}'}});
+      console.log(JSON.stringify({{same,old,failed:_autoReviewNext,log}}));
+    """)
+    assert out["same"] is None and out["old"] is None and out["failed"] is None
+    assert len(out["log"]) == 1
+
+
+def test_prefetched_profile_is_used_and_its_failed_crop_fetch_is_retried():
+    out = _flow(f"""
+      _autoReviewNext = {{kind:'likes',item:{{profile_id:'{PID2}',photo_count:1}},cards:null}};
+      let loaded = null;
+      loadAutoReviewPhotos = async (item,cards) => {{loaded = {{item,cards}};}};
+      await loadAutoReview('likes');
+      console.log(JSON.stringify({{log,loaded,kind:_autoReviewKind}}));
+    """)
+    assert out["log"] == [] and out["loaded"]["item"]["profile_id"] == PID2
+    assert out["loaded"]["cards"] is None and out["kind"] == "likes"
+
+
+def test_saved_answer_reveals_only_after_success_and_uses_recovered_label():
+    out = _flow(f"""
+      _autoReviewItem = {json.dumps(_ITEM_RANDOM)};
+      _autoReviewKind = 'likes';
+      postResponse = {{ok:true,result:{{decision:'like',score:0.61,threshold:0.5,would_like:false}}}};
+      nextResponses = [{{available:true,item:null}}];
+      let during = null;
+      autoReviewPause = async () => {{during = {{reveal:els['#autoreviewreveal'].textContent,
+        hint:els['#autoreviewhint'].textContent,busy:_autoReviewBusy}};}};
+      await answerAutoReview(true); // interrupted BQ write saved an earlier False instead
+      console.log(JSON.stringify({{during,after:els['#autoreviewreveal'].textContent}}));
+    """)
+    assert out["during"] == {
+        "reveal": "The bot liked this profile (score 0.6100, cutoff 0.5000). You disagreed.",
+        "hint": "saved as Dislike",
+        "busy": True,
+    }
+    assert out["after"] == ""
+
+
+def test_answer_does_not_post_before_the_photos_load():
+    out = _flow(f"""
+      _autoReviewItem = {json.dumps(_ITEM_RANDOM)}; _autoReviewPhotosReady = false;
+      await answerAutoReview(true);
+      console.log(JSON.stringify(log));
+    """)
+    assert out == []
+
+
+def test_waiting_expiry_and_store_failure_are_visible(env, monkeypatch):
+    import operation_love.hub.state as state_mod
+
+    store = ReviewStore()
+    env.use(lambda: store)
+    env.hub.auto_review_waiting_snapshot()
+    monkeypatch.setattr(state_mod, "_REVIEW_WAITING_MAX_AGE_S", -1)
+    env.hub.auto_review_waiting_snapshot()
+    assert sum(c[0] == "waiting" for c in store.calls) == 2
+    env.use(lambda: LegacyStore())
+    code, payload = env.hub.auto_review_waiting_snapshot()
+    assert code == 200 and payload["available"] is False
+
+    class Broken(ReviewStore):
+        def auto_review_waiting(self, **kwargs):
+            raise RuntimeError("counts failed")
+
+    env.use(lambda: Broken())
+    code, payload = env.hub.auto_review_waiting_snapshot()
+    assert (
+        code == 502
+        and payload["available"] is False
+        and "counts failed" in payload["reason"]
+    )
+
+
+def test_card_image_bounds_and_missing_store(env, monkeypatch):
+    import operation_love.hub.state as state_mod
+
+    monkeypatch.setattr(env.hub, "_load_review_frames", lambda _: [PNG])
+    monkeypatch.setattr(
+        state_mod,
+        "_cut_review_cards",
+        lambda _: state_mod._ReviewCards((b"jpeg",), ((20, 30),), 1),
+    )
+    assert env.hub.auto_review_card_image(PID, 0) == (200, b"jpeg", "image/jpeg")
+    assert env.hub.auto_review_card_image(PID, 1)[0] == 404
+    assert env.hub.auto_review_card_image(PID, -1)[0] == 404
+
+
+def test_prefetch_missing_responses_do_not_replace_a_ready_item():
+    out = _real_photo_flow(f"""
+      const ready = {{item:{{profile_id:'{PID2}'}}}}; _autoReviewNext = ready;
+      for (const result of [null,{{available:false,item:{{profile_id:'bad'}}}},{{available:true,item:null}}]) {{
+        nextResponses = [result]; await prefetchAutoReview({{profile_id:'{PID}'}});
+      }}
+      console.log(JSON.stringify(_autoReviewNext === ready));
+    """)
+    assert out is True
+
+
+def test_crop_prefetch_response_cannot_overwrite_a_newer_ready_item():
+    out = _real_photo_flow(f"""
+      let release; const gate = new Promise(r => release = r);
+      let called = 0;
+      getJSON = async () => {{
+        if (++called === 1) return {{available:true,item:{{profile_id:'{PID2}'}}}};
+        await gate; return {{available:true,cards:[{{}}]}};
+      }};
+      const work = prefetchAutoReview({{profile_id:'{PID}'}});
+      await Promise.resolve(); await Promise.resolve();
+      const previous = _autoReviewNext;
+      _autoReviewNext = {{item:{{profile_id:'{PID}'}}}};
+      release(); await work;
+      console.log(JSON.stringify({{previous,now:_autoReviewNext}}));
+    """)
+    assert out["previous"]["cards"] is None
+    assert out["now"] == {"item": {"profile_id": PID}}
+
+
+def test_photos_finishing_after_next_profile_cannot_enable_its_buttons():
+    out = _real_photo_flow(f"""
+      _autoReviewItem = {json.dumps(_ITEM_RANDOM)}; _autoReviewPhotosReady = false;
+      let loaded;
+      mk('#autoreviewphotos').querySelectorAll = () => [{{complete:false,addEventListener(n,cb){{if(n==='load')loaded=cb;}}}}];
+      const photos = loadAutoReviewPhotos(_autoReviewItem, {{available:true,frame_count:1,cards:[{{}}]}}, 0);
+      ++_autoReviewRequest; loaded(); await photos;
+      console.log(JSON.stringify(_autoReviewPhotosReady));
+    """)
+    assert out is False
+
+
+def test_wrong_pool_prefetch_is_discarded_and_undo_drops_prefetched_profiles():
+    out = _flow(f"""
+      _autoReviewNext = {{kind:'random',item:{{profile_id:'{PID2}'}}}};
+      nextResponses = [{{available:true,item:{{profile_id:'{PID}'}}}}];
+      await loadAutoReview('likes');
+      const wrongPool = _autoReviewItem.profile_id;
+      _autoReviewNext = {{kind:'likes',item:{{profile_id:'{PID2}'}}}};
+      postResponse = {{ok:true,result:{{kind:'likes',profile_name:'A'}}}};
+      nextResponses = [{{available:true,item:{{profile_id:'{PID}'}}}}];
+      await undoAutoReview();
+      console.log(JSON.stringify({{wrongPool,undo:_autoReviewItem.profile_id,log}}));
+    """)
+    assert out["wrongPool"] == out["undo"] == PID
+    assert sum(entry[0] == "GET" for entry in out["log"]) == 2
+
+
+def test_photo_request_failure_is_visible_and_never_falls_back_silently():
+    out = _real_photo_flow(f"""
+      _autoReviewItem = {json.dumps(_ITEM_RANDOM)}; _autoReviewPhotosReady = false;
+      getJSON = async () => {{throw new Error('offline');}};
+      await loadAutoReviewPhotos(_autoReviewItem,null,0);
+      console.log(JSON.stringify({{html:els['#autoreviewphotos'].innerHTML,ready:_autoReviewPhotosReady}}));
+    """)
+    assert (
+        "could not contact the local hub" in out["html"] and "<img" not in out["html"]
+    )
+    assert out["ready"] is False
+
+
+@pytest.mark.parametrize(
+    "missing", [1, 2], ids=["missing-middle-frame", "missing-trailing-frame"]
+)
+def test_cards_count_exposes_frames_lost_after_selection(env, monkeypatch, missing):
+    import operation_love.hub.state as state_mod
+
+    store = ReviewStore(
+        queue={"likes": _pass(kind="likes", photo_count=3)},
+        photos={(PID, index): PNG for index in range(3) if index != missing},
+    )
+    env.use(lambda: store)
+    selected = env.hub.auto_review_next("likes")[1]["item"]
+    monkeypatch.setattr(
+        state_mod,
+        "_cut_review_cards",
+        lambda frames: state_mod._ReviewCards((b"jpeg",), ((20, 30),), len(frames)),
+    )
+    payload = env.hub.auto_review_cards(PID)[1]
+    assert selected["photo_count"] == 3 and payload["frame_count"] == missing
+    assert payload["frame_count"] != selected["photo_count"]

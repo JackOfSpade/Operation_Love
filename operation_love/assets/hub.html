@@ -115,7 +115,12 @@
   .current-app { display:inline-block; padding:8px 12px; background:#2f6df0;
                  border:1px solid #2f6df0; border-radius:9px; font-weight:600; }
   .dot { width:6px; height:6px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle; }
-  /* AUTO pass review: the archived screenshots scroll inside the card like the profile did. */
+  /* AUTO review: the profile's photo cards, in order, each as wide as the card; the page scrolls
+     through them like the profile did.  The full-screenshot fallback scrolls inside the card. */
+  .autoreview-cards { display:flex; flex-direction:column; gap:12px; margin-top:10px; }
+  .autoreview-cards figure { margin:0; }
+  .autoreview-cards img { display:block; width:100%; height:auto; border-radius:7px; background:#111116; }
+  .autoreview-cards figcaption { margin-top:4px; }
   .autoreview-photos { display:flex; flex-direction:column; gap:8px; max-height:560px; overflow-y:auto;
                        margin-top:10px; padding:8px; background:#0c0c10;
                        border:1px solid rgba(255,255,255,.09); border-radius:9px; }
@@ -145,15 +150,17 @@
   </div>
 
   <div class="card" id="autoreviewcard">
-    <div class="row"><span class="muted">🟢 review auto passes</span><span class="meta" id="autoreviewhint" aria-live="polite">loading…</span></div>
-    <div class="meta" style="margin-top:6px">People the bot passed on its own. Say whether you would have liked them: every answer becomes a training label, and the random sample measures how often the bot passes someone you would like. Answer each one you open; skipping the ones you are unsure about skews that measurement.</div>
+    <div class="row"><span class="muted">🟢 review auto likes and passes</span><span class="meta" id="autoreviewwaiting" aria-live="polite">loading…</span></div>
+    <div class="meta" style="margin-top:6px">Profiles the bot liked or passed on its own, shown as their photos. Tap Like or Dislike for your own call; the bot's decision is shown only after you answer. Every answer becomes a training label, and the random passes measure how often the bot passes someone you would like. Reviews wait here until you get to them; the bot never stops for them. Answer each one you open; skipping the ones you are unsure about skews that measurement.</div>
     <div id="autoreviewsummary" style="margin-top:8px" role="status" aria-live="polite"></div>
     <div id="autoreviewbody" style="margin-top:10px"></div>
+    <div class="meta" id="autoreviewreveal" style="margin-top:10px" role="status" aria-live="polite"></div>
     <div class="controls" style="margin-top:12px">
-      <button id="autoreviewlike" class="primary" disabled>Would have liked</button>
-      <button id="autoreviewpass" disabled>Correct pass</button>
+      <button id="autoreviewlike" class="primary" disabled>Like</button>
+      <button id="autoreviewpass" disabled>Dislike</button>
       <button id="autoreviewundo" title="Delete your most recent answer (its training label too) and put that person back in the queue">Undo last answer</button>
     </div>
+    <div class="meta" id="autoreviewhint" style="margin-top:6px" aria-live="polite">loading…</div>
   </div>
 
   <div class="card">
@@ -1448,14 +1455,29 @@ async function tickLogs(){
 }
 
 // --- AUTO pass review card ---------------------------------------------------------------
-// Informational only. It shows the archive of profiles the bot passed on its own and records
-// the owner's answer to each as a training label. It never reads or changes run state and never
-// touches the GO/WAIT cue, so it uses the same quiet green/neutral styling as the other
-// read-only cards and no red WAIT styling anywhere: nothing here is something the operator must
-// not do.
+// Informational only. It shows the archive of profiles the bot liked or passed on its own and
+// records the owner's own Like/Dislike of each as a training label. It never reads or changes
+// run state and never touches the GO/WAIT cue, so it uses the same quiet green/neutral styling as
+// the other read-only cards and no red WAIT styling anywhere: nothing here is something the
+// operator must not do. Reviews accumulate while the bot runs; nothing here stops it.
+//
+// No anchoring: before the owner answers, the card shows the profile's photos and nothing of
+// the bot's decision, score or cutoff (and no pool name, which would give the decision away).
+// The decision is revealed in one line under the profile it is about, after the answer, and is
+// gone when the next profile is shown.
 //
 // The helpers below are pure and named so the hub test suite can run their real bodies under node.
-function nextAutoReviewKind(lastKind){ return lastKind === 'random' ? 'near_cut' : 'random'; }
+
+// The pools cycle likes -> random -> likes -> near_cut: every other profile is one the bot
+// liked, and the two pass pools take turns in between. The server falls back to any non-empty
+// pool without disclosing which one supplied the profile. The requested pools keep this cadence.
+function nextAutoReviewKind(lastKind, lastPassKind){
+  if (lastKind === 'random' || lastKind === 'near_cut') return 'likes';
+  return lastPassKind === 'random' ? 'near_cut' : 'random';
+}
+function autoReviewPoolKind(kind){
+  return (kind === 'likes' || kind === 'random' || kind === 'near_cut') ? kind : 'likes';
+}
 function autoReviewPercent(value){
   return (typeof value === 'number' && isFinite(value)) ? (value * 100).toFixed(1) + '%' : '—';
 }
@@ -1466,28 +1488,57 @@ function autoReviewImageUrl(profileId, index){
   return '/api/auto-review/image?profile_id=' + encodeURIComponent(profileId)
     + '&index=' + encodeURIComponent(index);
 }
-function autoReviewKindLabel(kind){ return kind === 'near_cut' ? 'NEAR THE CUT' : 'RANDOM SAMPLE'; }
+function autoReviewCardsUrl(profileId){
+  return '/api/auto-review/cards?profile_id=' + encodeURIComponent(profileId);
+}
+function autoReviewCardUrl(profileId, index){
+  return '/api/auto-review/card?profile_id=' + encodeURIComponent(profileId)
+    + '&index=' + encodeURIComponent(index);
+}
 function autoReviewSourceLabel(source){
   if (source === 'live_run') return 'the running bot';
   if (source === 'computed') return 'recomputed from your labels';
   if (source === 'last_run') return 'the last run';
   return '';
 }
+// The card header: "37 waiting: 25 likes, 6 random passes, 6 near the cut".
+function autoReviewWaitingText(payload){
+  if (!payload || !payload.available || !payload.waiting) return 'waiting count unavailable';
+  const count = value => Math.max(0, Math.floor(Number(payload.waiting[value]) || 0));
+  const total = count('total');
+  if (!total) return 'nothing waiting';
+  const likes = count('likes');
+  const random = count('random');
+  return `${total} waiting: ${likes} ${likes === 1 ? 'like' : 'likes'}, `
+    + `${random} random ${random === 1 ? 'pass' : 'passes'}, ${count('near_cut')} near the cut`;
+}
+// The owner's agreement with the bot's likes (display only; the live correction never reads it).
+function autoReviewAgreementText(likes){
+  if (!likes) return '';
+  const count = value => Math.max(0, Math.floor(Number(value) || 0));
+  const reviewed = count(likes.reviewed);
+  if (!reviewed) return '';
+  return `You agreed with ${Math.min(count(likes.agreed), reviewed)} of ${reviewed} reviewed `
+    + `${reviewed === 1 ? 'like' : 'likes'}`;
+}
+// Shown only AFTER the owner's answer is saved, under the profile it is about.
+function autoReviewRevealText(result){
+  const liked = result.decision === 'like';
+  return `The bot ${liked ? 'liked' : 'passed'} this profile (score ${autoReviewScore(result.score)}, `
+    + `cutoff ${autoReviewScore(result.threshold)}). You ${liked === result.would_like ? 'agreed' : 'disagreed'}.`;
+}
 function autoReviewSummaryHtml(stats){
   if (!stats || !stats.available) {
-    return `<div class="meta">${escHtml((stats && stats.reason) || 'Auto pass review is unavailable.')}</div>`;
+    return `<div class="meta">${escHtml((stats && stats.reason) || 'Auto review is unavailable.')}</div>`;
   }
   const count = value => Math.max(0, Math.floor(Number(value) || 0));
-  const store = stats.store || {};
   const summary = stats.summary || {};
   const cal = stats.calibration || null;
-  let html = `<div class="meta">Waiting for your review: ${count(store.pending_random)} random sample`
-    + ` · ${count(store.pending_near_cut)} near the cut</div>`;
   const reviewed = count(summary.random_reviewed);
   const wouldLike = count(summary.random_would_like);
-  html += `<div class="readiness-check"><div class="readiness-check-head"><span>Passed people you would have liked</span>`
+  let html = `<div class="readiness-check"><div class="readiness-check-head"><span>Passed people you would have liked</span>`
     + `<span class="readiness-value">${autoReviewPercent(summary.measured_false_pass_rate)}</span></div>`
-    + `<div class="readiness-target">Random sample: ${wouldLike} of ${reviewed} reviewed · the model predicted `
+    + `<div class="readiness-target">Random passes: ${wouldLike} of ${reviewed} reviewed · the model predicted `
     + `${autoReviewPercent(summary.expected_false_pass_rate)}</div>`;
   if (summary.verdict === 'above') {
     html += `<div class="readiness-target" style="color:#f0c45c">More than predicted (95% lower bound `
@@ -1502,10 +1553,12 @@ function autoReviewSummaryHtml(stats){
     html += `<div class="readiness-target">The predicted rate is not available yet.</div>`;
   }
   html += `</div>`;
+  const agreement = autoReviewAgreementText(stats.likes);
+  if (agreement) html += `<div class="meta" style="margin-top:8px">${escHtml(agreement)}</div>`;
   if (cal) {
     const source = autoReviewSourceLabel(stats.calibration_source);
     html += `<div class="meta" style="margin-top:8px">Recall target ${autoReviewPercent(cal.recall_target)}`
-      + ` · effective ${autoReviewPercent(cal.effective_target)} · like threshold ${autoReviewScore(cal.threshold)}`
+      + ` · effective ${autoReviewPercent(cal.effective_target)}`
       + (source ? ` · from ${escHtml(source)}` : '') + `</div>`;
   } else if (stats.calibration_pending) {
     html += `<div class="meta" style="margin-top:8px">Calculating the predicted rate…</div>`;
@@ -1514,74 +1567,158 @@ function autoReviewSummaryHtml(stats){
   }
   return html;
 }
+// Only photos inform the owner's answer. The name, demographics and bot metadata are omitted.
 function autoReviewItemHtml(item){
   if (!item) {
-    return `<div class="meta">Nothing is waiting for review. Passes appear here after the bot has run in auto mode.</div>`;
+    return `<div class="meta">Nothing is waiting for review. Profiles appear here after the bot has run in auto mode.</div>`;
   }
-  const count = Math.max(0, Math.floor(Number(item.photo_count) || 0));
-  const gap = (typeof item.score === 'number' && typeof item.threshold === 'number')
-    ? item.threshold - item.score : null;
-  const when = (typeof item.created_at === 'number' && isFinite(item.created_at) && item.created_at > 0)
-    ? new Date(item.created_at * 1000).toLocaleString() : '';
-  const facts = [
-    item.app ? escHtml(item.app) : '',
-    `score ${autoReviewScore(item.score)} vs cut ${autoReviewScore(item.threshold)}`
-      + (gap != null && gap > 0 ? ` (${gap.toFixed(4)} below)` : ''),
-    when ? escHtml(when) : '',
-  ].filter(Boolean).join(' · ');
-  let photos = '';
+  return `<div id="autoreviewphotos"><div class="meta" style="margin-top:8px">Loading the photos…</div></div>`;
+}
+// The profile as its photo cards, in order, each as wide as the card. When the cards could not
+// be cut (`fallback`) or fetched, the full screenshots are shown instead with a one-line note.
+function autoReviewPhotosHtml(item, cards){
+  if (!cards || !cards.available) {
+    return `<div class="meta">Could not load the photos: ${escHtml((cards && cards.reason) || 'the hub returned no photos')}.</div>`;
+  }
+  const list = (cards && cards.available && !cards.fallback && Array.isArray(cards.cards)) ? cards.cards : [];
+  if (list.length) {
+    const total = list.length;
+    const size = value => Math.max(1, Math.floor(Number(value) || 974));
+    return `<div class="autoreview-cards">` + list.map((card, k) =>
+      `<figure><img src="${escHtml(autoReviewCardUrl(item.profile_id, k))}" `
+      + `width="${size(card && card.width)}" height="${size(card && card.height)}" `
+      + `alt="Photo ${k + 1} of ${total}"><figcaption class="meta">Photo ${k + 1} of ${total}</figcaption></figure>`
+    ).join('') + `</div>`;
+  }
+  const count = Math.max(0, Math.floor(Number(item && item.photo_count) || 0));
+  if (!cards.fallback || !count) return `<div class="meta" style="margin-top:8px">This profile has no stored screenshots.</div>`;
+  const why = (cards && (cards.fallback || cards.reason)) || 'the photos could not be loaded';
+  let shots = '';
   for (let i = 0; i < count; i++) {
-    photos += `<img src="${escHtml(autoReviewImageUrl(item.profile_id, i))}" `
-      + `alt="Archived pass screenshot ${i + 1} of ${count}" loading="lazy">`;
+    shots += `<img src="${escHtml(autoReviewImageUrl(item.profile_id, i))}" `
+      + `alt="Archived screenshot ${i + 1} of ${count}" loading="lazy">`;
   }
-  return `<div class="row"><span class="b">${escHtml(item.profile_name || 'Unnamed profile')}</span>`
-    + `<span class="readiness-badge ${item.kind === 'near_cut' ? 'learning' : 'ready'}">`
-    + `${autoReviewKindLabel(item.kind)}</span></div>`
-    + `<div class="meta" style="margin-top:2px">${facts}</div>`
-    + (count > 0 ? `<div class="autoreview-photos" id="autoreviewphotos">${photos}</div>`
-                  : `<div class="meta" style="margin-top:8px">This pass has no stored screenshots.</div>`);
+  return `<div class="meta" style="margin-top:8px">Showing the full screenshots: the photos could not be cut `
+    + `from them (${escHtml(why)}).</div><div class="autoreview-photos">${shots}</div>`;
+}
+function autoReviewPause(ms){
+  return ms > 0 ? new Promise(resolve => setTimeout(resolve, ms)) : Promise.resolve();
 }
 
-let _autoReviewItem = null;
-let _autoReviewKind = 'random';
+let _autoReviewItem = null;          // the profile on screen
+let _autoReviewKind = 'likes';       // the requested pool (the cycle starts with a like)
+let _autoReviewLastPassKind = null;  // the pass pool shown most recently
+let _autoReviewPhotosReady = false;  // its photos (or the fallback) are on screen
+let _autoReviewNext = null;          // the next profile, fetched ahead: {kind, item, cards}
 let _autoReviewBusy = false;
 let _autoReviewRequest = 0;
+let _autoReviewPrefetchRequest = 0;
 let _autoReviewStatsRequest = 0;
 let _autoReviewStatsTimer = null;
+let _autoReviewWaitingRequest = 0;
+// How long the revealed decision stays under its profile before the next one replaces it.
+let _autoReviewRevealMs = 1500;
 
 function setAutoReviewButtons(){
-  const disabled = _autoReviewBusy || !_autoReviewItem;
+  // The owner decides on the photos, so the answer waits until they are on screen.
+  const disabled = _autoReviewBusy || !_autoReviewItem || !_autoReviewPhotosReady;
   for (const id of ['#autoreviewlike', '#autoreviewpass']) {
     const button = $(id);
     if (button) button.disabled = disabled;
   }
 }
+async function loadAutoReviewPhotos(item, cards, request){
+  let payload = cards;
+  if (!payload) {
+    try {
+      payload = await getJSON(autoReviewCardsUrl(item.profile_id));
+    } catch(_error) {
+      payload = {available: false, reason: 'could not contact the local hub'};
+    }
+  }
+  if (request !== _autoReviewRequest) return;
+  if (payload && payload.available && payload.frame_count !== item.photo_count) {
+    payload = {available:false, reason:'the archived screenshots are incomplete; reload to try again'};
+  }
+  const photos = $('#autoreviewphotos');
+  photos.innerHTML = autoReviewPhotosHtml(item, payload);
+  const images = Array.from(photos.querySelectorAll('img'));
+  // Rendering an <img> does not mean its bytes arrived. Every photo must load before an
+  // answer can be saved; a broken archive stays visibly unavailable for review.
+  const loaded = await Promise.all(images.map(img => new Promise(resolve => {
+    img.addEventListener('load', () => resolve(true), {once:true});
+    img.addEventListener('error', () => { img.alt = 'photo could not be loaded'; resolve(false); }, {once:true});
+    if (img.complete) resolve(img.naturalWidth > 0);
+  })));
+  if (request !== _autoReviewRequest) return;
+  _autoReviewPhotosReady = images.length > 0 && loaded.every(Boolean);
+  if (images.length && !_autoReviewPhotosReady) $('#autoreviewhint').textContent = 'a photo could not be loaded; reload to try again';
+  setAutoReviewButtons();
+}
+// Fetch the profile that will follow `after` and have the hub cut its photo cards now, so the
+// next profile appears without the wait. Runs in the background; any failure just means the
+// next profile is fetched when it is needed.
+async function prefetchAutoReview(after){
+  const request = ++_autoReviewPrefetchRequest;
+  const kind = nextAutoReviewKind(_autoReviewKind, _autoReviewLastPassKind);
+  let r = null;
+  try {
+    r = await getJSON('/api/auto-review/next?kind=' + encodeURIComponent(kind));
+  } catch(_error) {
+    return;
+  }
+  if (request !== _autoReviewPrefetchRequest || !r || !r.available || !r.item) return;
+  // A pool that fell back to the profile on screen offers nothing new.
+  if (r.item.profile_id === after.profile_id) return;
+  const next = {kind, item: r.item, cards: null};
+  _autoReviewNext = next;
+  try {
+    const cards = await getJSON(autoReviewCardsUrl(r.item.profile_id));
+    if (_autoReviewNext === next) next.cards = cards;
+  } catch(_error) {}
+}
 async function loadAutoReview(kind){
   const request = ++_autoReviewRequest;
+  ++_autoReviewPrefetchRequest;  // a prefetch still in flight was for the previous profile
+  const ready = _autoReviewNext;
+  _autoReviewNext = null;
   const hint = $('#autoreviewhint');
   const body = $('#autoreviewbody');
+  const reveal = $('#autoreviewreveal');
   _autoReviewItem = null;
+  _autoReviewPhotosReady = false;
   setAutoReviewButtons();
   try {
-    const r = await getJSON('/api/auto-review/next?kind=' + encodeURIComponent(kind));
-    if (request !== _autoReviewRequest) return;
-    if (!r || !r.available) {
-      body.innerHTML = autoReviewSummaryHtml({available: false, reason: r && (r.reason || r.error)});
-      hint.textContent = 'unavailable';
-      return;
+    let item = null;
+    let cards = null;
+    if (ready && ready.kind === kind && ready.item) {
+      item = ready.item;
+      cards = ready.cards;
+    } else {
+      const r = await getJSON('/api/auto-review/next?kind=' + encodeURIComponent(kind));
+      if (request !== _autoReviewRequest) return;
+      if (!r || !r.available) {
+        body.innerHTML = autoReviewSummaryHtml({available: false, reason: r && (r.reason || r.error)});
+        reveal.textContent = '';
+        hint.textContent = 'unavailable';
+        return;
+      }
+      item = r.item || null;
     }
-    _autoReviewItem = r.item || null;
-    if (_autoReviewItem) _autoReviewKind = _autoReviewItem.kind;
-    body.innerHTML = autoReviewItemHtml(_autoReviewItem);
-    hint.textContent = _autoReviewItem
-      ? (r.fell_back ? 'the other pool was empty' : '')
-      : 'nothing to review';
-    for (const img of body.querySelectorAll('img')) {
-      img.addEventListener('error', () => { img.alt = 'screenshot could not be loaded'; });
-    }
+    // The next profile replaces the previous one, and the decision revealed for it goes too.
+    _autoReviewItem = item;
+    body.innerHTML = autoReviewItemHtml(item);
+    reveal.textContent = '';
+    hint.textContent = item ? '' : 'nothing to review';
+    if (!item) return;
+    _autoReviewKind = kind;
+    if (kind === 'random' || kind === 'near_cut') _autoReviewLastPassKind = kind;
+    await loadAutoReviewPhotos(item, cards, request);
+    if (request === _autoReviewRequest) prefetchAutoReview(item);
   } catch(_error) {
     if (request !== _autoReviewRequest) return;
     body.innerHTML = `<div class="meta">Could not contact the local hub.</div>`;
+    reveal.textContent = '';
     hint.textContent = 'unavailable';
   } finally {
     if (request === _autoReviewRequest) setAutoReviewButtons();
@@ -1601,8 +1738,17 @@ async function refreshAutoReviewStats(){
     $('#autoreviewsummary').innerHTML = `<div class="meta">Could not contact the local hub.</div>`;
   }
 }
+// A passive count: reviews accumulate while the bot runs and wait for the owner.
+async function refreshAutoReviewWaiting(){
+  const request = ++_autoReviewWaitingRequest;
+  let text = 'waiting count unavailable';
+  try {
+    text = autoReviewWaitingText(await getJSON('/api/auto-review/waiting'));
+  } catch(_error) {}
+  if (request === _autoReviewWaitingRequest) $('#autoreviewwaiting').textContent = text;
+}
 async function answerAutoReview(wouldLike){
-  if (_autoReviewBusy || !_autoReviewItem) return;
+  if (_autoReviewBusy || !_autoReviewItem || !_autoReviewPhotosReady) return;
   const item = _autoReviewItem;
   _autoReviewBusy = true;
   setAutoReviewButtons();
@@ -1612,48 +1758,54 @@ async function answerAutoReview(wouldLike){
   // here (recorded, or already answered/gone) so the page loads the next one.  They differ for a
   // refused answer (409 "already reviewed"): nothing was saved, so the page must never say it was.
   let recorded = false;
+  let result = null;
   let moveOn = false;
   let notice = '';
   try {
     const r = await postJSON('/api/auto-review/answer', {profile_id: item.profile_id, would_like: wouldLike});
     if (r && r.ok) {
       recorded = true;
+      result = r.result;
       moveOn = true;
     } else {
       notice = (r && r.msg) || 'could not save the answer';
       hint.textContent = notice;
-      // A pass that was already answered (another tab) or no longer exists can never be
+      // A profile that was already answered (another tab) or no longer exists can never be
       // answered here: move on rather than leave the owner stuck on it.
       if (r && r.result && r.result.retired) moveOn = true;
     }
   } catch(_error) {
     hint.textContent = 'could not contact the local hub';
-  } finally {
+  }
+  if (!moveOn) {
     _autoReviewBusy = false;
-  }
-  if (moveOn) {
-    // Alternate the two pools so both the measurement and the high-value labels keep flowing.
-    await loadAutoReview(nextAutoReviewKind(item.kind));
-    // Say what happened, unless loading the next card has something more important to say.
-    // Loading a card clears the hint, so the refusal is restated rather than lost -- and a
-    // refused answer is NEVER reported as saved.
-    if (!hint.textContent) {
-      hint.textContent = recorded
-        ? (wouldLike ? 'saved as liked' : 'saved as a pass')
-        : (notice || 'not saved');
-    }
-    refreshAutoReviewStats();
-  } else {
     setAutoReviewButtons();
+    return;
   }
+  const saved = (result && result.would_like) ? 'saved as Like' : 'saved as Dislike';
+  if (recorded) {
+    // Only now is the bot's decision shown, under the profile it is about, for long enough to
+    // read; loading the next profile clears it.
+    $('#autoreviewreveal').textContent = autoReviewRevealText(result);
+    hint.textContent = saved;
+    await autoReviewPause(_autoReviewRevealMs);
+  }
+  _autoReviewBusy = false;
+  await loadAutoReview(nextAutoReviewKind(_autoReviewKind, _autoReviewLastPassKind));
+  // Say what happened, unless loading the next card has something more important to say.
+  // Loading a card clears the hint, so the refusal is restated rather than lost -- and a
+  // refused answer is NEVER reported as saved.
+  if (!hint.textContent) hint.textContent = recorded ? saved : (notice || 'not saved');
+  refreshAutoReviewStats();
+  refreshAutoReviewWaiting();
 }
 $('#autoreviewlike').onclick = () => answerAutoReview(true);
 $('#autoreviewpass').onclick = () => answerAutoReview(false);
 
-// A mis-tapped answer is a permanent training label and a permanent entry in the random-pool
-// measurement unless it can be taken back.  This deletes the NEWEST answer (label + review row)
-// so that person is in the queue again; it never reaches past it to an older one, and it is not
-// "Remove last saved label", which refuses to touch a review answer.
+// A mis-tapped answer is a permanent training label (and, for a random pass, a permanent entry
+// in the false-pass measurement) unless it can be taken back.  This deletes the NEWEST answer
+// (label + review row) so that person is in the queue again; it never reaches past it to an
+// older one, and it is not "Remove last saved label", which refuses to touch a review answer.
 async function undoAutoReview(){
   if (_autoReviewBusy) return;
   _autoReviewBusy = true;
@@ -1678,12 +1830,14 @@ async function undoAutoReview(){
     if (undo) undo.disabled = false;
   }
   if (undone) {
-    // The person is back in the queue: show them again (their pool first) rather than a stale card.
-    await loadAutoReview(undone.kind === 'near_cut' ? 'near_cut' : 'random');
+    // The person is back in the queue: show their pool next (not a profile fetched ahead).
+    _autoReviewNext = null;
+    await loadAutoReview(autoReviewPoolKind(undone.kind));
     if (!hint.textContent) {
       hint.textContent = `undid your answer for ${undone.profile_name || 'that person'}; they are back in the queue`;
     }
     refreshAutoReviewStats();
+    refreshAutoReviewWaiting();
   } else {
     hint.textContent = notice;
     setAutoReviewButtons();
@@ -1969,7 +2123,8 @@ $('#bugdl').onclick = async () => {
   tick(); setInterval(tick, 1000);
   tickEval(); setInterval(tickEval, 5000);    // model quality: poll often for live label progress; the CV itself only recomputes every N new labels (server-gated)
   tickLogs(); setInterval(tickLogs, 1500);    // live log: tail the captured stdout/stderr
-  loadAutoReview(_autoReviewKind); refreshAutoReviewStats();   // one look at load; refreshed after each answer, never polled
+  loadAutoReview(_autoReviewKind); refreshAutoReviewStats();   // one look at load; refreshed after each answer
+  refreshAutoReviewWaiting(); setInterval(refreshAutoReviewWaiting, 30000);   // the header's waiting count, also after each answer
 })();
 </script>
 </body></html>

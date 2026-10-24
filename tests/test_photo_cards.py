@@ -414,6 +414,85 @@ def test_card_pixels_are_read_only(profile):
         result.cards[0].pixels[0, 0, 0] = 1
 
 
+def test_display_cards_are_the_same_cards_with_the_like_button_left_in(profile):
+    """`paint_like_button=False` (the hub's review card) answers with the default call's cards:
+    same order, metadata and classification, measured on the painted canvas. Only the pixels
+    under the button differ, and there they are what the frames showed."""
+    cards, frames, painted = profile
+    shown = pc.extract_photo_cards(frames, paint_like_button=False)
+
+    def metadata(result):
+        return [
+            {k: v for k, v in vars(c).items() if k != "pixels"} for c in result.cards
+        ]
+
+    assert metadata(shown) == metadata(painted)
+    assert (
+        shown.shifts,
+        shown.template,
+        shown.frames_sha256,
+        shown.band_cards,
+        shown.merges,
+        shown.components,
+    ) == (
+        painted.shifts,
+        painted.template,
+        painted.frames_sha256,
+        painted.band_cards,
+        painted.merges,
+        painted.components,
+    )
+    photos = [cards[i] for i in (0, 2, 4, 5)]
+    for got, base, want in zip(shown.cards, painted.cards, photos, strict=True):
+        mask = _button_mask(base)
+        assert mask.any()
+        assert (got.pixels[~mask] == base.pixels[~mask]).all()
+        assert (base.pixels[mask] == pc.CLIP_MEAN_RGB).all()
+        assert not (got.pixels[mask] == pc.CLIP_MEAN_RGB).all()
+        # the stamped heart is back, pixel-exact, everywhere clear of the corner arcs
+        assert (got.pixels[:, _INTERIOR] == want.pixels[:, _INTERIOR]).all()
+        with pytest.raises(ValueError):
+            got.pixels[0, 0, 0] = 1
+
+
+@pytest.mark.parametrize("scenario", ["static-overlay", "video-overlay", "chain-break"])
+def test_display_mode_preserves_overlay_and_cross_component_card_selection(
+    scenario, monkeypatch
+):
+    """Display pixels must not affect stitching, video detection or duplicate merging."""
+    frames = (
+        _profile()[1]
+        if scenario == "chain-break"
+        else _overlay(scenario == "video-overlay")[1]
+    )
+    real_align = pc._align
+    calls = 0
+
+    def align(*args):
+        nonlocal calls
+        calls += 1
+        return None if calls == 2 else real_align(*args)
+
+    if scenario == "chain-break":
+        monkeypatch.setattr(pc, "_align", align)
+    painted = pc.extract_photo_cards(frames)
+    calls = 0
+    shown = pc.extract_photo_cards(frames, paint_like_button=False)
+    assert (shown.shifts, shown.merges, shown.band_cards) == (
+        painted.shifts,
+        painted.merges,
+        painted.band_cards,
+    )
+    assert len(shown.cards) == len(painted.cards)
+    for base, display in zip(painted.cards, shown.cards, strict=True):
+        assert {k: v for k, v in vars(display).items() if k != "pixels"} == {
+            k: v for k, v in vars(base).items() if k != "pixels"
+        }
+        mask = _button_mask(base)
+        assert np.array_equal(display.pixels[~mask], base.pixels[~mask])
+        assert not np.array_equal(display.pixels[mask], base.pixels[mask])
+
+
 def test_like_glyph_is_chosen_from_the_frames_not_told(profile):
     """Frames from either side of Hinge 10.8's heart change give the same cards, and the
     extractor names the glyph it found without being told the build."""

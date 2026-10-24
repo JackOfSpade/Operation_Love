@@ -953,10 +953,10 @@ python -m operation_love
   unrelated pool.
 - Every autonomous swipe is recorded for stats and optional daily limits, but is not fed
   back as a training label; learning remains grounded in your manual Training-mode decisions.
-  The one exception is a pass YOU answer in the **Review auto passes** card (below): your
-  answer, never the bot's own prediction, becomes a label.
+  The one exception is an AUTO like or pass YOU answer in the Hub's AUTO review card (below):
+  your answer, never the bot's own decision, becomes a (train-only) label.
 
-### 4a. Recall-target threshold and auto pass review
+### 4a. Recall-target threshold and AUTO review
 
 You would rather the bot like someone you would pass than pass someone you would like, so the
 like cutoff is set by a **recall target** instead of a fixed probability.
@@ -968,16 +968,16 @@ ranker:
 auto_review:
   enabled: true
   random_share: 0.5               # share of archived passes sent to the unbiased random pool
-  max_archived_passes: 400        # retention: newest N passes kept (0 = unlimited)
-  max_age_days: 30                # retention: older passes lose their photos (0 = unlimited)
+  max_archived_passes: 1500       # retention: newest N archived likes+passes kept (0 = unlimited)
+  max_age_days: 60                # retention: older archived likes+passes lose their photos (0 = unlimited)
 ```
 - **How the cutoff is set.** Every train scores all labels out-of-fold (10 folds, identity-grouped,
   so one person never sits on both sides of a split) and sets the cutoff to the score that keeps
-  `like_recall_target` of your MANUALLY labelled likes above it. Answers to reviewed passes
-  are training signal but are never calibration positives: each one is a profile the model had
-  already passed, so calibrating on them would grade the model on its own past misses. If the
-  labels cannot support the calibration the ranker is **not ready** and says why (`stats`, the
-  run log, the Hub); it never falls back to the fixed `like_threshold`, which is only a
+  `like_recall_target` of your MANUALLY labelled likes above it. Answers in the AUTO review
+  card (likes and passes) are training signal but are never calibration labels: each one is a
+  profile the model had already decided, so calibrating on them would grade the model on its own
+  past decisions. If the labels cannot support the calibration the ranker is **not ready** and
+  says why (`stats`, the run log, the Hub); it never falls back to the fixed `like_threshold`, which is only a
   placeholder while a recall target is set. `stats` and the startup banner print a
   `Calibration:` line with the live cutoff.
 - **What "95%" means, and what it needs.** The cutoff is aimed at the people who come NEXT, not
@@ -993,34 +993,51 @@ auto_review:
   83% at 5 likes, 91% at 10, whatever the log says), so with fewer the ranker is not ready and says how many it needs. The calibration depends
   only on WHICH labels exist, not on the order the store returns them. A `like_recall_target`
   above 0.99 is honoured as configured (only the live raise below is capped at 0.99).
-- **Review auto passes (Hub card).** AUTO archives every profile the MODEL passes (screenshots,
-  score, embedding) in `auto_passes` / `auto_pass_photos`; this is separate from the training
-  archive (`profiles`) that retraction planning reasons about. The card alternates a
-  **random** pool (uniform, measures the false-pass rate) and a **near-cut** pool (closest to
-  the cutoff, the most informative labels). Tap **Would have liked** or **Correct pass**;
-  either way the answer is stored as a label (`auto_review_random` / `auto_review_near_cut`). A
-  pass you never open stays unlabelled. The card works with no run live, shows the measured
-  random-pool false-pass rate beside the one the out-of-fold scores predicted, and says
-  "unavailable" on a store without the archive tables.
+- **AUTO review (Hub card).** AUTO archives every profile the MODEL passes and every model
+  like that LANDED (screenshots, score, v1 embedding) in `auto_passes` / `auto_pass_photos`,
+  plus the profile's whole-photo feature row; this is separate from the training archive
+  (`profiles`) that retraction planning reasons about. A like the session policy or the
+  like-ratio ceiling demoted to a pass is never archived (it was neither a model pass nor a
+  like). Archiving runs after the action landed and is best-effort: a failure is printed and
+  the run carries on. The card shows each profile as its **sequence of photo cards**, in order
+  ("Photo k of n"), because you decide on photos alone; if the cards cannot be cut it falls back
+  to the full screenshots with a one-line note. Tap **Like** or **Dislike**: your own judgment
+  of the person. The bot's decision, score and cutoff are hidden until you answer (no
+  anchoring), then one line says what the bot did and whether you agreed. Three pools take
+  turns (likes, random passes, likes, near-cut passes): **likes** (uniform sample of AUTO likes;
+  your agreement is shown, display only), **random passes** (uniform, measures the false-pass
+  rate) and **near-cut passes** (closest to the cutoff, the most informative labels). Every
+  answer is stored as a label (`auto_review_like` / `auto_review_random` /
+  `auto_review_near_cut`) and every one of them is **train-only**: never a calibration label,
+  never the bot's own decision. A profile you never open stays unlabelled.
+- **Reviews wait for you.** AUTO never stops, pauses or notifies for reviews: they accumulate
+  and the card header shows how many are waiting per pool ("37 waiting: 25 likes, 6 random
+  passes, 6 near the cut"). The card works with no run live, shows the measured random-pool
+  false-pass rate beside the one the out-of-fold scores predicted, and says "unavailable" on a
+  store without the archive tables.
 - **Taking an answer back.** **Undo last answer** (on the card) deletes your NEWEST answer, its
   training label and its review row, so that person is in the queue again; repeat it to walk
   back further. "Remove last saved label" never touches a review answer: if the newest label is
   one it refuses and points you at Undo, rather than deleting an older, unrelated swipe. (On
   BigQuery, rows streamed in the last ~30 minutes cannot be deleted yet; the Hub shows the error
   and the undo works once they settle.)
-- **Retention.** The archive holds strangers' screenshots (~2.4 MB per pass), so it is bounded
-  from the first pass, like the opener replay corpus: a pass older than `max_age_days` or beyond
-  the newest `max_archived_passes` loses its screenshots, embedding and manifest (on BigQuery
-  the Cloud Storage objects too), answered or not. Your ANSWERS (labels, review rows) are never
-  touched. The sweep runs when an AUTO run starts and after every 25 archived passes, also when
-  `auto_review.enabled` is false; `0` means unlimited for that bound. A failed sweep is printed
-  and retried, never fatal.
-- **Live correction.** With at least 10 random-pool answers, if the one-sided 95% (Wilson) lower
+- **Retention.** The archive holds strangers' screenshots (~2.4 MB per profile, so the
+  shipped 1500 is about 3.6 GB), so it is bounded from the first archived profile, like the
+  opener replay corpus. The bounds cover EVERY archived AUTO decision, likes and passes alike: one
+  older than `max_age_days` (shipped 60) or beyond the newest `max_archived_passes` (shipped
+  1500) loses its screenshots, embedding and manifest (on BigQuery the Cloud Storage objects
+  too), answered or not, so a profile still unreviewed past either bound leaves the queue. Your
+  ANSWERS (labels, review rows) are never touched. The sweep runs when an AUTO run starts and
+  after every 25 archived profiles, also when `auto_review.enabled` is false; `0` means
+  unlimited for that bound. A failed sweep is printed and retried, never fatal.
+- **Live correction.** Only the random PASS pool drives it: like answers and near-cut answers
+  never do. With at least 10 random-pool answers, if the one-sided 95% (Wilson) lower
   bound of the observed false-pass rate exceeds the expected one, the effective target rises by
   the whole measured gap, `(observed - expected) * pass_share / base_rate` (capped at 0.99; the
   bound only decides WHETHER to move, so a real shortfall is not discounted by the confidence
   margin). `pass_share` counts only genuine model passes: a like the session policy or the
-  like-ratio ceiling demoted to a pass is never in the random pool, so it is not counted. The
+  like-ratio ceiling demoted to a pass is never in the random pool, so it is not counted, and
+  archived AUTO likes are in neither pass pool nor in any count of model passes. The
   expected rate is measured at the base target, not the corrected one, so a correction cannot
   lower its own bar. It is a proportional backstop, not a controller: in simulation it recovers
   about three quarters of a live shortfall (the discounted version it replaced, about half), not all of it. The cutoff only moves at a

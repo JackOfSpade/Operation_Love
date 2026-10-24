@@ -3,8 +3,9 @@
 The archive exists so the owner can later say "I would have liked that one".  Three properties
 matter and each has a test that fails if the guard behind it is removed:
 
-* only a REAL model dislike is archived (not a like, not a policy-demoted like, not no_face),
-  and only AFTER the pass landed and its decision row exists;
+* only a REAL model dislike is archived as a pass (not a like, not a policy-demoted like, not
+  no_face), and only AFTER the pass landed and its decision row exists (landed model likes are
+  archived as likes: tests/test_auto_review_like_archive.py);
 * the archive can never stop the run, and never turns into a training label;
 * the contextual-demotion headroom the model grants reaches AutoSessionPolicy.
 """
@@ -256,23 +257,31 @@ def test_draw_random_sample_is_a_bernoulli_draw_at_the_configured_share(monkeypa
         assert worker_mod._draw_random_sample(1.0) is True
 
 
-def test_a_like_is_never_archived():
+def test_a_like_is_never_archived_as_a_pass():
+    """A landed model like is archived for review, but as a LIKE: never a pass row, never a
+    random-pool draw (tests/test_auto_review_like_archive.py covers the like archive)."""
     like = Decision("like", 0.95, [0.1, 0.2], "ranker")
 
     _, driver, store, events = _run([_profile()], _Decider([like]))
 
-    assert "like" in events and store.auto_passes == []
+    assert "like" in events
+    assert [(p["decision"], p["random_sample"]) for p in store.auto_passes] == [
+        ("like", False)
+    ]
 
 
-def test_no_face_is_never_archived_even_though_it_lands_as_a_pass():
-    no_face = Decision("no_face", 0.0, [], "ranker")
+@pytest.mark.parametrize(
+    "embedding", [[], [0.1, 0.2]], ids=["empty", "retained-vector"]
+)
+def test_no_face_is_never_archived_even_though_it_lands_as_a_pass(embedding):
+    no_face = Decision("no_face", 0.0, embedding, "ranker")
 
     _, driver, store, events = _run([_profile()], _Decider([no_face]))
 
     # The conservative pass still happens and is still audited as no_face ...
     assert "dislike" in events
     assert store.decisions == [("bumble", "no_face", "auto")]
-    # ... but there is no embedding to learn from and nothing to review.
+    # ... but it is never a model verdict to review, even if a custom decider retained a vector.
     assert store.auto_passes == []
 
 
@@ -345,7 +354,11 @@ def test_a_like_demoted_by_the_ratio_ceiling_is_not_archived_either():
 
     # card 1 liked; card 2 demoted to a pass by the ceiling; card 3 a real model dislike.
     assert [d for _, d, _ in store.decisions] == ["like", "dislike", "dislike"]
-    assert [p["score"] for p in store.auto_passes] == [0.30]
+    # The landed like is archived as a like; the demoted card is in neither archive.
+    assert [(p.get("decision", "dislike"), p["score"]) for p in store.auto_passes] == [
+        ("like", 0.55),
+        ("dislike", 0.30),
+    ]
 
 
 def test_nothing_is_archived_when_review_is_off():
@@ -515,7 +528,8 @@ def test_a_zero_headroom_disables_the_real_policys_demotion():
     )
 
     assert events.count("like") == 25
-    assert store.auto_passes == []
+    # Every card was a landed model like: archived as likes, none as a pass.
+    assert [p.get("decision", "dislike") for p in store.auto_passes] == ["like"] * 25
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -0.01, "x", True, [0.1]])
@@ -772,7 +786,7 @@ def test_a_failing_prune_is_loud_and_never_stops_the_run(monkeypatch, capsys):
 def test_the_sweep_reports_what_it_removed(capsys):
     store = _PruningStore([], prune=lambda **kw: 12)
     _run([_profile(1)], _Decider([_dislike()]), store=store, auto_review_max_passes=400)
-    assert "retention removed 12 archived pass(es)" in capsys.readouterr().out
+    assert "retention removed 12 archived profile(s)" in capsys.readouterr().out
 
 
 def test_a_store_without_an_archive_is_not_an_error_for_retention():

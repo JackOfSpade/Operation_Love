@@ -59,8 +59,8 @@ def test_omitted_sections_keep_the_legacy_fixed_threshold():
     assert cfg.auto_review == c.AutoReviewCfg(enabled=True, random_share=0.5)
     # Retention is on by default, never "keep every stranger's photos forever".
     assert (cfg.auto_review.max_archived_passes, cfg.auto_review.max_age_days) == (
-        400,
-        30.0,
+        1500,
+        60.0,
     )
 
 
@@ -102,9 +102,10 @@ def test_shipped_config_yaml_carries_the_owner_recall_target():
     assert cfg.ranker.contextual_recall_budget == 0.02
     assert cfg.auto_review.enabled is True
     assert cfg.auto_review.random_share == 0.5
-    # The shipped file bounds the archive of strangers' screenshots by count AND age.
-    assert cfg.auto_review.max_archived_passes == 400
-    assert cfg.auto_review.max_age_days == 30
+    # The shipped file bounds the archive of strangers' screenshots (likes and passes) by count
+    # AND age, sized for reviews that wait until the owner gets to them (~3.6 GB at 2.4 MB each).
+    assert cfg.auto_review.max_archived_passes == 1500
+    assert cfg.auto_review.max_age_days == 60
     # like_threshold stays valid: it is the pre-calibration placeholder.
     assert 0.0 < cfg.ranker.like_threshold < 1.0
 

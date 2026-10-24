@@ -61,10 +61,10 @@ _NO_PHOTO_RETRY_S = 0.5
 # instantly) while think_time_s supplies the measured like-vs-pass asymmetry shape.
 # Derived from PacingCfg's own default so the baseline can't drift from the config.
 _THINK_TIME_BASELINE_S = PacingCfg().swipe_delay_s
-# How many archived AUTO passes between retention sweeps within one run (a sweep also runs when
-# the run starts).  Each sweep is a cheap local delete on SQLite but a few round trips on
-# BigQuery, so it is batched rather than done after every pass; the archive can therefore
-# overshoot its count bound by at most this many passes between sweeps.
+# How many archived AUTO decisions (likes and passes) between retention sweeps within one run (a
+# sweep also runs when the run starts).  Each sweep is a cheap local delete on SQLite but a few
+# round trips on BigQuery, so it is batched rather than done after every archive; the archive can
+# therefore overshoot its count bound by at most this many profiles between sweeps.
 _AUTO_PRUNE_EVERY = 25
 _STATUS_ERROR_MAX_CHARS = 600
 _TARGETING_LICENCE_UNSET = object()
@@ -376,18 +376,21 @@ class Worker(threading.Thread):
         # The evidence id of the published checkpoint card whose Hub action was claimed, carried
         # to that action's persistence release fact.  Cleared with the claimed action per card.
         self._training_published_evidence_id = None
-        # AUTO pass review.  ``None`` disables the archive entirely (the default, so every
-        # existing caller is untouched); a probability turns it on and is the share of archived
-        # passes that go into the RANDOM pool -- the pool whose answers measure the live
-        # false-pass rate, as opposed to the near-cut pool the owner reviews for the label value.
+        # AUTO review.  ``None`` disables the archive entirely (the default, so every existing
+        # caller is untouched); a probability turns it on -- model passes AND landed model likes
+        # are archived -- and is the share of archived PASSES that go into the RANDOM pool: the
+        # pool whose answers measure the live false-pass rate, as opposed to the near-cut pool
+        # the owner reviews for the label value.  Likes are never drawn into either pass pool.
         # Validated at construction so a bad value fails before this thread touches a device.
         self.auto_review_random_share = _validated_auto_review_random_share(
             auto_review_random_share
         )
         self._auto_review_missing_store_warned = False
-        # Retention of the pass archive (see AutoReviewCfg): both ``None``/0 = unbounded, the
-        # default, so every existing caller is untouched.  Validated like the share, here, so a
-        # typo fails before this thread touches a device instead of silently keeping everything.
+        self._auto_review_like_unsupported_warned = False
+        # Retention of the review archive, likes and passes alike (see AutoReviewCfg): both
+        # ``None``/0 = unbounded, the default, so every existing caller is untouched.  Validated
+        # like the share, here, so a typo fails before this thread touches a device instead of
+        # silently keeping everything.
         self._auto_review_retention = require_auto_pass_retention(
             auto_review_max_passes, auto_review_max_age_days
         )
@@ -1788,7 +1791,7 @@ class Worker(threading.Thread):
         # driver that has no enumeration subsystem to gate (every non-Hinge driver today), so
         # this is a no-op for them, exactly like install_policy above.
         self._install_opener_flag()
-        # Retention sweep BEFORE the first pass of the run: it catches the backlog left by an
+        # Retention sweep BEFORE the first action of the run: it catches the backlog left by an
         # earlier run (or a freshly tightened bound) without waiting for this run to archive.
         self._prune_auto_passes()
         # Session micro-break fatigue model: re-rolled each stretch so a long run's
@@ -1960,11 +1963,12 @@ class Worker(threading.Thread):
                     break
 
                 # The MODEL's own verdict, kept before the session policy or the ratio shaper
-                # below can rewrite it.  Only a genuine model dislike (score under the
-                # threshold) is archived for the owner's pass review: a like that the policy or
-                # the ratio ceiling demoted scored AT OR ABOVE the threshold, so putting it in
-                # the review pool would inflate the measured false-pass rate that the live
-                # recall adjustment is calibrated against.
+                # below can rewrite it.  Only that verdict acted on unchanged is archived for the
+                # owner's review: a genuine model dislike (score under the threshold) or a model
+                # like that landed.  A like that the policy or the ratio ceiling demoted scored
+                # AT OR ABOVE the threshold, so putting it in a pass pool would inflate the
+                # measured false-pass rate that the live recall adjustment is calibrated
+                # against, and it was never liked, so it is not a like to review either.
                 model_decision = d.decision
 
                 # A session can decline a marginal model like according to its bounded
@@ -2626,14 +2630,15 @@ class Worker(threading.Thread):
                 if self._auto_policy is not None:
                     self._auto_policy.record_landed_action(landed_action)
 
-                # AUTO pass review.  Reached only after the pass physically landed AND its
-                # decision row is durable (a failure of either raised out of this iteration
-                # above), and only for a real model dislike: not no_face (no embedding, nothing
-                # to learn from), not a like, not a demoted like.  The archive is an add-on to a
-                # pass that already happened, so it can never stop the run or become a label --
-                # see _archive_auto_pass.
-                if model_decision == "dislike" and d.decision == "dislike":
-                    self._archive_auto_pass(
+                # AUTO review.  Reached only after the action physically landed AND its decision
+                # row is durable (a failure of either raised out of this iteration above), and
+                # for a like also after its opener was committed; only for the model's own
+                # verdict acted on unchanged: a real model dislike or a landed model like.  Not
+                # no_face (no embedding, nothing to learn from), not a demoted like.  The archive
+                # is an add-on to an action that already happened, so it can never stop the run
+                # or become a label -- see _archive_auto_decision.
+                if model_decision == d.decision and d.decision in ("like", "dislike"):
+                    self._archive_auto_decision(
                         profile,
                         d,
                         profile_id=lineage_profile_id,
@@ -2740,28 +2745,36 @@ class Worker(threading.Thread):
             self._break_due_after = random.uniform(12, 35)
             self.stop_event.wait(pause)
 
-    def _archive_auto_pass(
+    def _archive_auto_decision(
         self, profile, decision: Decision, *, profile_id: str, threshold: float
     ) -> None:
-        """Archive one landed AUTO pass so the owner can later say whether it was a mistake.
+        """Archive one landed AUTO pass or like so the owner can later give their own answer.
 
-        Never raises and never records a label: a pass the owner has not reviewed says nothing
-        about their taste (training on the model's own prediction is the feedback loop AUTO
-        avoids everywhere else), so this writes ONLY the review manifest via the store's
+        Never raises and never records a label: a profile the owner has not reviewed says
+        nothing about their taste (training on the model's own prediction is the feedback loop
+        AUTO avoids everywhere else), so this writes ONLY the review manifest via the store's
         ``record_auto_pass``.  A failure -- the store returning anything but True, or raising --
-        is printed loudly and the run carries on: the pass has already happened and the review
+        is printed loudly and the run carries on: the action has already happened and the review
         archive is a measurement aid, not a precondition of swiping.
 
-        ``profile_id`` is the same opaque lineage id the pass's decision row carries, so a
-        reviewed pass can be joined back to the action that produced it.
+        A like is archived with ``decision="like"`` and ``random_sample=False`` and draws no
+        random-pool sample: likes have their own review pool and must never enter the pass pools
+        whose answers drive the live correction.  A store whose ``record_auto_pass`` takes no
+        ``decision`` keyword could only file a like as a pass, so it archives passes only and
+        says so once per run.
+
+        ``profile_id`` is the same opaque lineage id the action's decision row carries, so a
+        reviewed profile can be joined back to the action that produced it.
         """
         share = self.auto_review_random_share
         if share is None:
             return
+        liked = decision.decision == "like"
+        noun = "like" if liked else "pass"
         try:
             # The embedding is what the label would be trained on, so an archive without one is
             # of no use to the owner's goal and is skipped (no_face never reaches here; this
-            # guards a decider that returns a dislike with no vector).  Materialised before the
+            # guards a decider that returns a decision with no vector).  Materialised before the
             # emptiness test: truthiness of an array-like vector is a ValueError, and this
             # method promises not to raise.
             embedding = list(decision.embedding)
@@ -2774,45 +2787,62 @@ class Worker(threading.Thread):
                 if not self._auto_review_missing_store_warned:
                     self._auto_review_missing_store_warned = True
                     print(
-                        f"{self.app.title()} auto pass review is enabled but "
+                        f"{self.app.title()} auto review is enabled but "
                         f"{type(self.store).__name__} has no record_auto_pass; this run's "
-                        "passes will NOT be archived for review."
+                        "passes and likes will NOT be archived for review."
+                    )
+                return
+            if liked and not _accepts_keywords(record, "decision"):
+                if not self._auto_review_like_unsupported_warned:
+                    self._auto_review_like_unsupported_warned = True
+                    print(
+                        f"{self.app.title()} auto like review: "
+                        f"{type(self.store).__name__}.record_auto_pass takes no decision "
+                        "keyword, so it can only archive passes; this run's likes will NOT be "
+                        "archived for review."
                     )
                 return
             photos = list(getattr(profile, "photos", None) or [])
             if not photos:
                 print(
-                    f"{self.app.title()} auto pass review: this pass captured no photos, so "
-                    "there is nothing for the owner to review; not archived."
+                    f"{self.app.title()} auto {noun} review: this {noun} captured no photos, "
+                    "so there is nothing for the owner to review; not archived."
                 )
                 return
-            archived = record(
-                run_id=self.run_id,
-                app=self.app,
-                profile_id=profile_id,
-                score=float(decision.score),
-                threshold=threshold,
-                embedding=embedding,
-                photos=photos,
-                profile_name=str(getattr(profile, "name", "") or ""),
-                random_sample=_draw_random_sample(share),
-                capture_truncated=self._label_metadata(profile)["capture_truncated"],
-            )
+            kwargs = {
+                "run_id": self.run_id,
+                "app": self.app,
+                "profile_id": profile_id,
+                "score": float(decision.score),
+                "threshold": threshold,
+                "embedding": embedding,
+                "photos": photos,
+                "profile_name": str(getattr(profile, "name", "") or ""),
+                "capture_truncated": self._label_metadata(profile)["capture_truncated"],
+            }
+            if liked:
+                kwargs["decision"] = "like"
+                kwargs["random_sample"] = False
+            else:
+                kwargs["random_sample"] = _draw_random_sample(share)
+            archived = record(**kwargs)
         except Exception as exc:  # noqa: BLE001 -- the review archive must never stop a run
             print(
-                f"{self.app.title()} auto pass review: archiving this pass failed "
-                f"({type(exc).__name__}: {exc}); the run continues and this pass will not be "
-                "offered for review."
+                f"{self.app.title()} auto {noun} review: archiving this {noun} failed "
+                f"({type(exc).__name__}: {exc}); the run continues and this {noun} will not "
+                "be offered for review."
             )
             return
         if archived is not True:
             print(
-                f"{self.app.title()} auto pass review: the store did not archive this pass "
-                f"(record_auto_pass returned {archived!r}); the run continues and it will "
-                "not be offered for review."
+                f"{self.app.title()} auto {noun} review: the store did not archive this "
+                f"{noun} (record_auto_pass returned {archived!r}); the run continues and it "
+                "will not be offered for review."
             )
             return
-        self._archive_pass_photo_features(profile, decision, profile_id=profile_id)
+        self._archive_photo_features(
+            profile, decision, profile_id=profile_id, noun=noun
+        )
         self._archived_since_prune += 1
         if self._archived_since_prune >= _AUTO_PRUNE_EVERY:
             self._prune_auto_passes()
@@ -2985,19 +3015,20 @@ class Worker(threading.Thread):
                 "`python -m tools.backfill_photo_features` can fill the row later."
             )
 
-    def _archive_pass_photo_features(
-        self, profile, decision: Decision, *, profile_id: str
+    def _archive_photo_features(
+        self, profile, decision: Decision, *, profile_id: str, noun: str
     ) -> None:
-        """The archived pass's ``photo_features`` row, keyed by the pass's ``profile_id``.
+        """The archived pass's or like's ``photo_features`` row, keyed by its ``profile_id``.
 
-        An answer to the pass becomes a label with that same profile_id, so this row is the one
-        the whole-photo label loader joins it to.  Uses the vector decide() already computed
-        (whole-photo mode) and otherwise computes it here, synchronously before the post-pass
-        pause (ops/RUNBOOK.md: ~2-3 s per archived pass).  Written best-effort in every mode
-        and never raises, like the archive it belongs to: a missing row is printed loudly and
-        the backfill fills it from ``auto_pass_photos`` while the pass is retained.
+        An answer to the archived profile becomes a label with that same profile_id, so this
+        row is the one the whole-photo label loader joins it to.  Uses the vector decide()
+        already computed (whole-photo mode) and otherwise computes it here, synchronously
+        before the post-action pause (ops/RUNBOOK.md: ~2-3 s per archived profile).  Written
+        best-effort in every mode and never raises, like the archive it belongs to: a missing
+        row is printed loudly and the backfill fills it from ``auto_pass_photos`` while the
+        profile is retained.  ``noun`` ("pass" or "like") only words the messages.
         """
-        context = "auto pass review"
+        context = f"auto {noun} review"
         try:
             if getattr(decision, "frames_sha256", ""):
                 from .vision.photo_cards import WHOLE_PHOTO_FEATURE_VERSION
@@ -3027,7 +3058,7 @@ class Worker(threading.Thread):
             )
         except Exception as exc:  # noqa: BLE001 -- the review archive must never stop a run
             print(
-                f"WARNING: {self.app.title()} {context}: saving this pass's whole-photo "
+                f"WARNING: {self.app.title()} {context}: saving this {noun}'s whole-photo "
                 f"features FAILED ({type(exc).__name__}: {exc}); the run continues and "
                 "`python -m tools.backfill_photo_features` can fill the row later."
             )
@@ -3035,10 +3066,11 @@ class Worker(threading.Thread):
     def _prune_auto_passes(self) -> None:
         """Apply the archive's retention bounds (count and age); never raises.
 
-        The archive holds real strangers' screenshots, so it is bounded from the first pass
-        (``AutoReviewCfg``).  A store without ``prune_auto_passes`` cannot hold an archive, so
-        there is nothing to bound; a failure is printed loudly and the next sweep retries --
-        retention is housekeeping and must never stop a run that is otherwise fine.
+        The archive holds real strangers' screenshots, so it is bounded from the first archived
+        profile (``AutoReviewCfg``); the bounds cover likes and passes alike.  A store without
+        ``prune_auto_passes`` cannot hold an archive, so there is nothing to bound; a failure is
+        printed loudly and the next sweep retries -- retention is housekeeping and must never
+        stop a run that is otherwise fine.
         """
         self._archived_since_prune = 0
         max_passes, max_age_days = self._auto_review_retention
@@ -3051,14 +3083,14 @@ class Worker(threading.Thread):
             removed = prune(max_passes=max_passes, max_age_days=max_age_days)
         except Exception as exc:  # noqa: BLE001 -- housekeeping must never stop a run
             print(
-                f"{self.app.title()} auto pass review: retention could not prune the archive "
+                f"{self.app.title()} auto review: retention could not prune the archive "
                 f"({type(exc).__name__}: {exc}); the run continues and the next sweep retries."
             )
             return
         if removed:
             print(
-                f"{self.app.title()} auto pass review: retention removed {removed} archived "
-                f"pass(es) (bounds: newest {max_passes or 'unlimited'}, "
+                f"{self.app.title()} auto review: retention removed {removed} archived "
+                f"profile(s) (likes and passes; bounds: newest {max_passes or 'unlimited'}, "
                 f"{max_age_days or 'unlimited'} days)."
             )
 

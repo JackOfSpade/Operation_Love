@@ -7,12 +7,15 @@ checkpoint that must remain available for the owner to reopen and decide.
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import copy
+import io
 import math
 import re
 import threading
 import time
+from dataclasses import dataclass
 
 from .. import config as cfg_mod
 from .. import platforms
@@ -40,10 +43,13 @@ _EVAL_COLD_WAIT_S = (
 _MAX_BROWSER_CLIENT_ID_LENGTH = 128
 
 # --- AUTO pass review -----------------------------------------------------------
-# The two pools the review card draws from: a uniform sample of what AUTO really passed (whose
-# answers measure the live false-pass rate) and the passes that scored closest to the cut
-# (whose answers are the most informative labels).  Mirrors the store's `kind` vocabulary.
-AUTO_REVIEW_KINDS = ("random", "near_cut")
+# The three pools the review card draws from: a uniform sample of what AUTO really passed (whose
+# answers alone measure the live false-pass rate), the passes that scored closest to the cut
+# (whose answers are the most informative labels) and a uniform sample of what AUTO liked.
+# Mirrors the store's `kind` vocabulary.
+AUTO_REVIEW_KIND_LIKES = "likes"
+AUTO_REVIEW_PASS_KINDS = ("random", "near_cut")
+AUTO_REVIEW_KINDS = (AUTO_REVIEW_KIND_LIKES, *AUTO_REVIEW_PASS_KINDS)
 # A pass id is the worker's per-card lineage id, `uuid.uuid4().hex`: exactly 32 lowercase hex
 # digits.  Anything else cannot name a stored pass, and refusing it here -- before it reaches a
 # store query, a GCS object path or a response header -- is the whole path-traversal defence.
@@ -56,6 +62,17 @@ _MAX_AUTO_REVIEW_NAME_CHARS = 200
 # The hub-side recomputation of the model calibration (idle hub, nothing live to read it from)
 # is a full fit plus grouped OOF scoring, so it is cached and refreshed in the background.
 _REVIEW_CALIBRATION_MAX_AGE_S = 300.0
+# The card header's "N waiting" count is a store query (BigQuery when that is the backend), and
+# every open tab polls it, so one answer is shared for this long; an answer or an undo through
+# this hub drops it at once.
+_REVIEW_WAITING_MAX_AGE_S = 15.0
+_REVIEW_WAITING_KEYS = ("likes", "random", "near_cut", "total")
+# The photo cards cut from an archived profile's frames for the review card.  Cutting them is
+# seconds of CPU, so the last few profiles' JPEGs stay in memory (the one shown, the one the
+# page prefetched, one an undo may bring back) and are never written to disk.
+_REVIEW_CARDS_CACHE_PROFILES = 4
+_REVIEW_CARDS_CONCURRENT_CUTS = 2
+_REVIEW_CARD_JPEG_QUALITY = 88
 _REVIEW_PHOTO_SIGNATURES = (
     (b"\x89PNG\r\n\x1a\n", "image/png"),
     (b"\xff\xd8\xff", "image/jpeg"),
@@ -134,7 +151,7 @@ def validate_stop_after_seconds(value: object) -> tuple[bool, int | None, str | 
 
 
 def validate_auto_review_kind(value: object) -> tuple[bool, str | None, str | None]:
-    """Validate the review pool selector (``random`` or ``near_cut``) without coercion."""
+    """Validate the review pool selector (``likes``, ``random`` or ``near_cut``), no coercion."""
     if not isinstance(value, str) or value not in AUTO_REVIEW_KINDS:
         return False, None, f"kind must be one of {', '.join(AUTO_REVIEW_KINDS)}"
     return True, value, None
@@ -226,6 +243,75 @@ def _require_review_methods(store: object, names: tuple[str, ...]) -> None:
             f"{type(store).__name__} does not support auto pass review "
             f"(missing {', '.join(missing)})"
         )
+
+
+@dataclass(frozen=True)
+class _ReviewCards:
+    """One archived profile as the review card shows it: its photo cards as JPEGs, in order.
+
+    ``fallback`` is why the full screenshots are shown instead (``None`` when there are cards);
+    ``frame_count`` is how many archived frames the cards were cut from.
+    """
+
+    images: tuple[bytes, ...]
+    sizes: tuple[tuple[int, int], ...]  # (width, height) of each card, in pixels
+    frame_count: int
+    fallback: str | None = None
+
+
+def _encode_review_card(pixels) -> bytes:
+    """One card's RGB pixels as a JPEG (display only; the bytes never leave memory)."""
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.fromarray(pixels, "RGB").save(
+        buffer, format="JPEG", quality=_REVIEW_CARD_JPEG_QUALITY
+    )
+    return buffer.getvalue()
+
+
+def _cut_review_cards(frames: list[bytes]) -> _ReviewCards:
+    """The photo cards of one archived profile, or the reason to show its screenshots instead.
+
+    The cards are cut by the same `extract_photo_cards` the ranker's whole-photo feature uses,
+    with the like button left in (the owner sees the photos as Hinge showed them).  Any failure
+    reported by PhotoCardsError falls back to screenshots; unexpected failures propagate.
+    """
+    if not frames:
+        return _ReviewCards((), (), 0, "this profile has no stored screenshots")
+    from ..vision.photo_cards import NoPhotoCards, PhotoCardsError, extract_photo_cards
+
+    try:
+        result = extract_photo_cards(frames, paint_like_button=False)
+        if not result.cards:
+            raise NoPhotoCards(
+                f"no photo card was found in {len(frames)} archived frame(s)"
+            )
+        images = tuple(_encode_review_card(card.pixels) for card in result.cards)
+        sizes = tuple(
+            (int(card.pixels.shape[1]), int(card.pixels.shape[0]))
+            for card in result.cards
+        )
+    except PhotoCardsError as exc:
+        return _ReviewCards((), (), len(frames), f"{type(exc).__name__}: {exc}")
+    return _ReviewCards(images, sizes, len(frames))
+
+
+def _clean_review_waiting(value: object) -> dict | None:
+    """The store's waiting counts as exact non-negative ints, or ``None`` when malformed."""
+    if not isinstance(value, dict):
+        return None
+    clean = {}
+    for key in _REVIEW_WAITING_KEYS:
+        count = value.get(key)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return None
+        clean[key] = count
+    if clean["total"] != sum(
+        clean[key] for key in _REVIEW_WAITING_KEYS if key != "total"
+    ):
+        return None
+    return clean
 
 
 def _sniff_review_image_type(data: object) -> str | None:
@@ -325,6 +411,21 @@ class HubState:
         # Serialises answers: a double-click or two open tabs must not race two label writes
         # for one pass (the store also refuses a second answer; this keeps the refusal clean).
         self._review_answer_lock = threading.Lock()
+        # The header's waiting counts, shared by every tab for _REVIEW_WAITING_MAX_AGE_S.  The
+        # generation is bumped by an answer or an undo, so a query that started before one can
+        # never re-cache the count it made stale.
+        self._review_waiting_cache: tuple[float, dict] | None = None
+        self._review_waiting_generation = 0
+        # Photo cards per archived profile (LRU, newest last) and the cuts in flight, so the
+        # page's prefetch and its display of the same profile cut it once.
+        self._review_cards_lock = threading.Lock()
+        self._review_cards_cache: collections.OrderedDict[str, _ReviewCards] = (
+            collections.OrderedDict()
+        )
+        self._review_cards_inflight: dict[str, threading.Event] = {}
+        self._review_cards_slots = threading.BoundedSemaphore(
+            _REVIEW_CARDS_CONCURRENT_CUTS
+        )
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -954,7 +1055,7 @@ class HubState:
             return result
 
     @staticmethod
-    def _clean_review_item(item: object, fallback_kind: str | None) -> dict | None:
+    def _clean_review_item(item: object) -> dict | None:
         """Whitelist and sanity-check one archived pass before it reaches the page.
 
         ``None`` means the store handed back something that is not a reviewable pass; the
@@ -970,9 +1071,6 @@ class HubState:
             return None
         if not 0 <= photo_count <= _MAX_AUTO_REVIEW_PHOTO_INDEX + 1:
             return None
-        kind = item.get("kind")
-        if kind not in AUTO_REVIEW_KINDS:
-            kind = fallback_kind
 
         def _number(key: str) -> float | None:
             value = item.get(key)
@@ -982,25 +1080,38 @@ class HubState:
 
         return {
             "profile_id": profile_id,
-            "kind": kind,
             "app": str(item.get("app") or "")[:32],
             "run_id": str(item.get("run_id") or "")[:64],
             "created_at": _number("created_at"),
-            "score": _number("score"),
-            "threshold": _number("threshold"),
             "photo_count": photo_count,
             "profile_name": str(item.get("profile_name") or "")[
                 :_MAX_AUTO_REVIEW_NAME_CHARS
             ],
         }
 
+    @staticmethod
+    def _review_pool_order(kind: str) -> list[str]:
+        """The pools ``auto_review_next`` tries, in order, when the owner asks for ``kind``.
+
+        A pass pool falls back to the other pass pool before the likes, and the likes to the
+        random passes before the near-cut ones, so likes and passes keep alternating for as
+        long as both exist.
+        """
+        if kind == AUTO_REVIEW_KIND_LIKES:
+            return [AUTO_REVIEW_KIND_LIKES, *AUTO_REVIEW_PASS_KINDS]
+        return [
+            kind,
+            *(k for k in AUTO_REVIEW_PASS_KINDS if k != kind),
+            AUTO_REVIEW_KIND_LIKES,
+        ]
+
     def auto_review_next(self, kind: str) -> tuple[int, dict]:
-        """The next unreviewed archived pass, preferring ``kind`` and falling back to the other.
+        """The next unreviewed archived profile, preferring ``kind``, else any non-empty pool.
 
         The fallback lives here (one store session, one round trip) rather than in the page:
-        when one pool is empty the owner should still be offered something from the other.
+        when one pool is empty the owner should still be offered something from another.
         """
-        order = [kind] + [k for k in AUTO_REVIEW_KINDS if k != kind]
+        order = self._review_pool_order(kind)
 
         def work(store):
             _require_review_methods(
@@ -1014,11 +1125,11 @@ class HubState:
             for candidate in order:
                 item = store.next_auto_pass_for_review(kind=candidate)
                 if item is not None:
-                    return item, candidate
-            return None, None
+                    return item
+            return None
 
         try:
-            item, found_kind = self._with_review_store(work)
+            item = self._with_review_store(work)
         except _ReviewUnavailable as exc:
             return 200, {"available": False, "reason": str(exc), "item": None}
         except Exception as exc:  # noqa: BLE001 -- surface storage errors to the local operator
@@ -1027,15 +1138,12 @@ class HubState:
                 "reason": f"{type(exc).__name__}: {exc}",
                 "item": None,
             }
-        payload: dict = {
-            "available": True,
-            "requested_kind": kind,
-            "item": None,
-            "fell_back": False,
-        }
+        # Pool names imply the bot's decision. Return only neutral profile metadata until
+        # the owner has answered; selection details stay inside the store/hub.
+        payload: dict = {"available": True, "item": None}
         if item is None:
             return 200, payload
-        clean = self._clean_review_item(item, found_kind)
+        clean = self._clean_review_item(item)
         if clean is None:
             return 502, {
                 "available": False,
@@ -1043,7 +1151,6 @@ class HubState:
                 "item": None,
             }
         payload["item"] = clean
-        payload["fell_back"] = clean["kind"] != kind
         return 200, payload
 
     def auto_review_image(
@@ -1069,6 +1176,150 @@ class HubState:
         if media_type is None:
             return 502, None, "the stored auto pass photo is not a recognised image"
         return 200, bytes(data), media_type
+
+    # --- the archived profile as its photo cards -------------------------------------------
+    def _load_review_frames(self, profile_id: str) -> list[bytes]:
+        """Every archived frame of one profile, in scroll order; store errors propagate."""
+
+        def work(store):
+            _require_review_methods(store, ("auto_pass_photo",))
+            frames: list[bytes] = []
+            for index in range(_MAX_AUTO_REVIEW_PHOTO_INDEX + 1):
+                data = store.auto_pass_photo(profile_id=profile_id, index=index)
+                if data is None:
+                    break
+                frames.append(bytes(data))
+            return frames
+
+        return self._with_review_store(work)
+
+    def _review_cards(self, profile_id: str) -> _ReviewCards:
+        """The profile's cards from the cache, else cut once and cached.
+
+        A request that finds the same profile already being cut (the page's prefetch, then its
+        display) waits for that cut instead of starting a second one; if the cut failed, the
+        waiter tries itself.  A store failure is raised and never cached; a fallback is.
+        """
+        while True:
+            with self._review_cards_lock:
+                cached = self._review_cards_cache.get(profile_id)
+                if cached is not None:
+                    self._review_cards_cache.move_to_end(profile_id)
+                    return cached
+                pending = self._review_cards_inflight.get(profile_id)
+                if pending is None:
+                    pending = threading.Event()
+                    self._review_cards_inflight[profile_id] = pending
+                    break
+            pending.wait()  # the cutter sets it in its `finally`, success or not
+        cards = None
+        try:
+            # Different profiles may arrive from several tabs at once. Bound their CPU
+            # and transient image memory as well as the completed-profile LRU below.
+            with self._review_cards_slots:
+                cards = _cut_review_cards(self._load_review_frames(profile_id))
+            return cards
+        finally:
+            with self._review_cards_lock:
+                if self._review_cards_inflight.get(profile_id) is pending:
+                    del self._review_cards_inflight[profile_id]
+                if cards is not None:
+                    self._review_cards_cache[profile_id] = cards
+                    self._review_cards_cache.move_to_end(profile_id)
+                    while len(self._review_cards_cache) > _REVIEW_CARDS_CACHE_PROFILES:
+                        self._review_cards_cache.popitem(last=False)
+            pending.set()
+
+    def auto_review_cards(self, profile_id: str) -> tuple[int, dict]:
+        """One archived profile as its sequence of photo cards, for the review card.
+
+        The payload lists each card's size; ``auto_review_card_image`` serves its JPEG.  When the
+        cards cannot be cut, ``fallback`` says why and the page shows the full screenshots.
+        """
+        try:
+            cards = self._review_cards(profile_id)
+        except _ReviewUnavailable as exc:
+            return 200, {"available": False, "reason": str(exc)}
+        except ValueError as exc:
+            return 404, {
+                "available": False,
+                "reason": str(exc) or "archived profile not found",
+            }
+        except Exception as exc:  # noqa: BLE001 -- surface storage errors to the local operator
+            return 502, {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+        return 200, {
+            "available": True,
+            "reason": None,
+            "profile_id": profile_id,
+            "frame_count": cards.frame_count,
+            "cards": [
+                {"index": index, "width": width, "height": height}
+                for index, (width, height) in enumerate(cards.sizes)
+            ],
+            "fallback": cards.fallback,
+        }
+
+    def auto_review_card_image(
+        self, profile_id: str, index: int
+    ) -> tuple[int, bytes | None, str]:
+        """One photo card as ``(status, JPEG bytes | None, media type or message)``."""
+        try:
+            cards = self._review_cards(profile_id)
+        except _ReviewUnavailable as exc:
+            return 501, None, str(exc)
+        except ValueError as exc:
+            return 404, None, str(exc) or "archived profile not found"
+        except Exception as exc:  # noqa: BLE001 -- surface storage errors to the local operator
+            return 502, None, f"{type(exc).__name__}: {exc}"
+        if not 0 <= index < len(cards.images):
+            return 404, None, "photo card not found"
+        return 200, cards.images[index], "image/jpeg"
+
+    # --- how many profiles wait for an answer ------------------------------------------------
+    def _invalidate_review_waiting(self) -> None:
+        with self._lock:
+            self._review_waiting_cache = None
+            self._review_waiting_generation += 1
+
+    def auto_review_waiting_snapshot(self) -> tuple[int, dict]:
+        """Unreviewed archived profiles per pool (``likes``, ``random``, ``near_cut``, ``total``).
+
+        A passive count for the card header: nothing about it stops or slows a run.
+        """
+        with self._lock:
+            cached = self._review_waiting_cache
+            generation = self._review_waiting_generation
+        if (
+            cached is not None
+            and time.monotonic() - cached[0] < _REVIEW_WAITING_MAX_AGE_S
+        ):
+            return 200, {"available": True, "reason": None, "waiting": dict(cached[1])}
+
+        def work(store):
+            _require_review_methods(store, ("auto_review_waiting",))
+            return store.auto_review_waiting(app=None)
+
+        try:
+            raw = self._with_review_store(work)
+        except _ReviewUnavailable as exc:
+            return 200, {"available": False, "reason": str(exc), "waiting": None}
+        except Exception as exc:  # noqa: BLE001 -- surface storage errors to the local operator
+            return 502, {
+                "available": False,
+                "reason": f"{type(exc).__name__}: {exc}",
+                "waiting": None,
+            }
+        waiting = _clean_review_waiting(raw)
+        if waiting is None:
+            return 502, {
+                "available": False,
+                "reason": "the store returned malformed waiting counts",
+                "waiting": None,
+            }
+        with self._lock:
+            if self._review_waiting_generation == generation:
+                self._review_waiting_cache = (time.monotonic(), dict(waiting))
+        return 200, {"available": True, "reason": None, "waiting": waiting}
 
     def submit_auto_review_answer(
         self, body: object
@@ -1106,6 +1357,7 @@ class HubState:
                 # Unknown pass or one already answered (another tab, a double click).  `retired`
                 # tells the page this card can never be answered, so it moves on instead of
                 # leaving the owner stuck on it.
+                self._invalidate_review_waiting()
                 return (
                     False,
                     {"retired": True},
@@ -1120,14 +1372,16 @@ class HubState:
             with self._lock:
                 # The answer moves the live false-pass evidence and the training set.
                 self._calibration_dirty = True
+            self._invalidate_review_waiting()
         safe = _json_safe(result)
         return True, safe if isinstance(safe, dict) else {}, "recorded", 200
 
     def undo_auto_review_answer(self) -> tuple[bool, dict | None, str, int]:
         """Undo the newest answer to an archived pass: its label and review row are deleted.
 
-        The pass is unreviewed again, so a mis-tapped "Would have liked" can be corrected
-        instead of living on in the training set and in the random-pool false-pass numerator.
+        The profile is unreviewed again, so a mis-tapped Like or Dislike can be corrected
+        instead of living on in the training set (and, for a random-sample pass, in the
+        false-pass numerator).
         Goes through the same store path (and the same answer lock) as an answer, so it sees the
         answer just given even when that is still buffered in the live run's store.
 
@@ -1161,6 +1415,7 @@ class HubState:
             with self._lock:
                 # The undone answer leaves the live false-pass evidence and the training set.
                 self._calibration_dirty = True
+            self._invalidate_review_waiting()
         safe = _json_safe(result)
         print(
             "Hub: undid the auto-review answer for "
@@ -1366,6 +1621,30 @@ class HubState:
             "verdict": verdict,
         }
 
+    @staticmethod
+    def _review_likes_summary(store_stats: dict) -> dict | None:
+        """The owner's agreement with AUTO's likes (display only), or ``None`` without one.
+
+        Read from the store's separate ``likes`` section, which nothing in the false-pass
+        comparison above or in ``threshold.live_adjustment`` reads.
+        """
+        likes = store_stats.get("likes")
+        if not isinstance(likes, dict):
+            return None
+
+        def _count(key: str) -> int:
+            value = likes.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                return 0
+            return value
+
+        reviewed = _count("reviewed")
+        return {
+            "archived": _count("archived"),
+            "reviewed": reviewed,
+            "agreed": min(_count("agreed"), reviewed),
+        }
+
     def auto_review_stats_snapshot(self) -> tuple[int, dict]:
         """Store counts plus the model calibration, for the review card's header."""
         result: dict = {
@@ -1377,6 +1656,7 @@ class HubState:
             "calibration_pending": False,
             "calibration_error": None,
             "summary": None,
+            "likes": None,
         }
 
         def work(store):
@@ -1404,6 +1684,7 @@ class HubState:
             calibration_pending=pending,
             calibration_error=error,
             summary=_json_safe(self._review_summary(store_stats, calibration)),
+            likes=self._review_likes_summary(store_stats),
         )
         return 200, result
 

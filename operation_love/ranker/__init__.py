@@ -137,11 +137,14 @@ class Store(Protocol):
         profile_id: str = "",
         created_at: object | None = None,
     ) -> None: ...
-    # --- AUTO pass archive + owner review -------------------------------------------------
-    # AUTO archives every profile the model PASSES (the screenshots it saw, the score and
-    # threshold in force, the embedding) so the owner can later answer "would have liked" or
-    # "correct pass"; EVERY answer becomes a training label. `random_sample` marks the unbiased
-    # pool the live false-pass rate is measured on. Archiving writes NO label, decision, or
+    # --- AUTO decision archive + owner review ---------------------------------------------
+    # AUTO archives every profile the model PASSES and every model LIKE that landed (the
+    # screenshots it saw, the score and threshold in force, the embedding) so the owner can
+    # later give their own Like / Dislike; EVERY answer becomes a training label, never a
+    # calibration label. The table keeps its name `auto_passes`; `decision` is "dislike" (a
+    # model pass, the default) or "like" (a landed model like; its `random_sample` is stored
+    # False). `random_sample` (a required bool) marks the unbiased pass pool the live
+    # false-pass rate is measured on. Archiving writes NO label, decision, or
     # profiles/profile_photos row (the training archive is what retraction planning reasons
     # about). Returns False (loudly) when the photos cannot be archived; malformed arguments
     # raise ValueError. All keyword-only.
@@ -158,41 +161,53 @@ class Store(Protocol):
         profile_name: str = "",
         random_sample: bool,
         capture_truncated: bool = False,
+        decision: str = "dislike",
     ) -> bool: ...
-    # One unreviewed pass of `kind` ("random": uniform among random_sample passes; "near_cut":
-    # among the rest, the largest score - threshold), or None when that pool is empty. Returns
-    # {"profile_id","app","run_id","created_at" (epoch float),"score","threshold",
-    # "photo_count","profile_name","kind"}.
+    # One unreviewed archived row of `kind` ("random": uniform among random_sample passes;
+    # "near_cut": among the other passes, the largest score - threshold; "likes": uniform among
+    # archived likes), or None when that pool is empty. Returns {"profile_id","app","run_id",
+    # "created_at" (epoch float),"score","threshold","photo_count","profile_name","kind"}; kind
+    # "likes" means the bot liked the profile, the others that it passed.
     def next_auto_pass_for_review(
         self, *, kind: str, app: str | None = None
     ) -> dict | None: ...
     def auto_pass_photo(self, *, profile_id: str, index: int) -> bytes | None: ...
-    # ValueError for an unknown or already-reviewed pass. Writes the review row AND a training
-    # label (source "auto_review_random" / "auto_review_near_cut") as one unit: atomic on
-    # SQLite, label-first and retry-idempotent on BigQuery (a pass whose label already exists
-    # never gets a second one). Returns {"kind", "label_source"}.
+    # ValueError for an unknown or already-reviewed row. `would_like` is the owner's own Like
+    # (True) / Dislike (False). Writes the review row AND a training label (source
+    # "auto_review_random" / "auto_review_near_cut" / "auto_review_like", by the row's pool) as
+    # one unit: atomic on SQLite, label-first and retry-idempotent on BigQuery (a row whose
+    # label already exists never gets a second one). Returns {"kind", "label_source",
+    # "decision", "score", "threshold", "would_like"}; metadata is for the after-answer reveal
+    # and would_like is the answer actually saved (a retry can adopt an earlier answer).
     def record_auto_pass_review(self, *, profile_id: str, would_like: bool) -> dict: ...
     # {"pending_random","pending_near_cut","random_reviewed","random_would_like" (over the most
     # recent `window` random reviews),"near_cut_reviewed","near_cut_would_like","auto_likes",
-    # "auto_passes","auto_model_passes"} -- auto_likes/auto_passes count source='auto'
-    # decisions at or after the earliest archived pass's own DECISION row (the worker records
+    # "auto_passes","auto_model_passes","likes"} -- auto_likes/auto_passes count source='auto'
+    # decisions at or after the earliest archived PASS's own DECISION row (the worker records
     # the decision before it archives, so the window must open there to count that pass; 0/0
-    # when none archived). auto_model_passes is the part of auto_passes that entered the archive
-    # (the rest are likes the session policy or like-ratio ceiling demoted to a pass, which the
-    # random pool never samples). app=None means all apps pooled: the model and its calibration
-    # labels are shared.
+    # when no pass is archived). auto_model_passes is the part of auto_passes that entered the
+    # archive as a pass (the rest are likes the session policy or like-ratio ceiling demoted to
+    # a pass, which the random pool never samples). Archived likes never reach those keys:
+    # "likes" is a separate display-only section {"archived","reviewed","agreed"} (like rows
+    # still archived; answers to archived likes, cumulative; how many were Like), never read by
+    # the live correction. app=None means all apps pooled: the model and its calibration labels
+    # are shared.
     def auto_review_stats(
         self, *, app: str | None = None, window: int = 200
     ) -> dict: ...
-    # Undo the NEWEST answer to an archived pass: delete its review row and its training label,
-    # so the pass is unreviewed again. Returns {"profile_id","profile_name","kind","would_like"}
-    # of the undone answer, or None when there is none. ("Remove last saved label" refuses with
-    # ValueError instead of touching an answer, and never reaches past one to an older swipe.)
+    # The hub's "N waiting" count: {"likes","random","near_cut","total"} (ints), the unreviewed
+    # rows with their photos still archived that next_auto_pass_for_review can offer per pool.
+    def auto_review_waiting(self, *, app: str | None = None) -> dict: ...
+    # Undo the NEWEST answer to an archived pass or like: delete its review row and its training
+    # label, so the row is unreviewed again. Returns {"profile_id","profile_name","kind",
+    # "would_like"} of the undone answer, or None when there is none. ("Remove last saved label"
+    # refuses with ValueError instead of touching an answer, and never reaches past one to an
+    # older swipe.)
     def undo_latest_auto_review(self) -> dict | None: ...
-    # Retention: delete archived passes (manifest, embedding, screenshots -- and on BigQuery the
-    # GCS objects) older than `max_age_days` or beyond the `max_passes` newest, answered or not;
-    # None/0 leaves a bound off. The owner's ANSWERS (labels, review rows, decisions) are never
-    # touched. Returns how many passes were removed.
+    # Retention: delete archived AUTO decisions, likes and passes together (manifest, embedding,
+    # screenshots -- and on BigQuery the GCS objects) older than `max_age_days` or beyond the
+    # `max_passes` newest, answered or not; None/0 leaves a bound off. The owner's ANSWERS
+    # (labels, review rows, decisions) are never touched. Returns how many rows were removed.
     def prune_auto_passes(
         self,
         *,

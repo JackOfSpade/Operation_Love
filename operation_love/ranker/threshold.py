@@ -47,8 +47,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from numbers import Integral, Real
 
-# A label whose ``source`` starts with this prefix is an answer to an archived AUTO pass
-# ("auto_review_random" / "auto_review_near_cut").  Everything else -- including legacy rows
+# A label whose ``source`` starts with this prefix is an answer to an archived AUTO profile
+# ("auto_review_random" / "auto_review_near_cut" / "auto_review_like"). Everything else -- including legacy rows
 # whose source is NULL or "" -- is a manual training label and is eligible for calibration.
 REVIEW_SOURCE_PREFIX = "auto_review"
 

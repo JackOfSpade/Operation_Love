@@ -2387,3 +2387,89 @@ def test_sqlite_training_release_summary_signature_matches_the_store_protocol():
     )
     for name in ("like_profile_id", "pass_profile_id", "like_send_evidence_id"):
         assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_sqlite_migrates_legacy_auto_passes_decision_column(tmp_path):
+    """`auto_passes` shipped before AUTO likes were archived, so a db file from then has the
+    table WITHOUT `decision`. CREATE TABLE IF NOT EXISTS is a no-op against it and the ALTER is
+    the only thing that carries the column in -- without it every like archive fails its
+    INSERT. The pre-existing row keeps NULL, which every reader treats as a pass."""
+    db = tmp_path / "store.db"
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE auto_passes ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, app TEXT NOT NULL,"
+        " profile_id TEXT NOT NULL, created_at REAL NOT NULL, score REAL NOT NULL,"
+        " threshold REAL NOT NULL, embedding TEXT NOT NULL, photo_count INTEGER NOT NULL,"
+        " profile_name TEXT, random_sample INTEGER NOT NULL, capture_truncated INTEGER NOT NULL)"
+    )
+    con.execute(
+        "INSERT INTO auto_passes (run_id, app, profile_id, created_at, score, threshold,"
+        " embedding, photo_count, profile_name, random_sample, capture_truncated)"
+        " VALUES ('old-run','hinge','legacy',1.0,0.4,0.5,'[0.5]',1,'Ada',0,0)"
+    )
+    con.commit()
+    con.close()
+
+    store = SQLiteStore(db)
+    try:
+        # A legacy manifest is reviewable only while every promised screenshot is present.
+        store.con.execute(
+            "INSERT INTO auto_pass_photos (run_id, app, profile_id, created_at, photo_index,"
+            " gcs_uri, sha256, byte_size, content_type, photo)"
+            " VALUES ('old-run','hinge','legacy',1.0,0,'','hash',3,'image/png',?)",
+            (b"old",),
+        )
+        store.con.commit()
+        cols = [
+            row[1]
+            for row in store.con.execute("PRAGMA table_info(auto_passes)").fetchall()
+        ]
+        assert cols[-1] == "decision"
+        assert store.record_auto_pass(
+            run_id="new-run",
+            app="hinge",
+            profile_id="liked",
+            score=0.9,
+            threshold=0.5,
+            embedding=[0.25],
+            photos=[b"\x89PNG\r\n\x1a\nliked"],
+            random_sample=False,
+            decision="like",
+        )
+        rows = store.con.execute(
+            "SELECT profile_id, decision FROM auto_passes ORDER BY id"
+        ).fetchall()
+        assert rows == [("legacy", None), ("liked", "like")]
+        assert (
+            store.next_auto_pass_for_review(kind="near_cut")["profile_id"] == "legacy"
+        )
+        assert store.next_auto_pass_for_review(kind="likes")["profile_id"] == "liked"
+        assert store.auto_review_waiting() == {
+            "likes": 1,
+            "random": 0,
+            "near_cut": 1,
+            "total": 2,
+        }
+    finally:
+        store.close()
+    SQLiteStore(db).close()  # re-opening is idempotent
+
+
+def test_sqlite_archive_decision_migration_does_not_hide_operational_errors(
+    tmp_path, monkeypatch
+):
+    real_connect = sqlite3.connect
+
+    class _MigrationFails(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if sql == "ALTER TABLE auto_passes ADD COLUMN decision TEXT":
+                raise sqlite3.OperationalError("disk I/O error")
+            return super().execute(sql, *args, **kwargs)
+
+    def connect(*args, **kwargs):
+        return real_connect(*args, factory=_MigrationFails, **kwargs)
+
+    monkeypatch.setattr(store_module.sqlite3, "connect", connect)
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        SQLiteStore(tmp_path / "store.db")

@@ -67,23 +67,23 @@ class RankerCfg:
 
 @dataclass
 class AutoReviewCfg:
-    # AUTO archives every profile it passes (screenshots + score + embedding) so the hub can
-    # show it back to the owner, whose answer becomes a training label.  `enabled: false`
-    # stops the archiving (existing archived passes and reviews are untouched).
+    # AUTO archives model passes and landed model likes (screenshots + score + v1 embedding)
+    # so the hub can show them back to the owner, whose answers become train-only labels.
+    # `enabled: false` stops new archives; retention still bounds existing likes and passes.
     enabled: bool = True
     # Share of archived passes that go to the RANDOM pool (an unbiased sample of what AUTO
     # really passed, which measures the live false-pass rate); the rest are reviewed
-    # near-the-cut, where an answer teaches the model the most.  Strictly between 0 and 1.
+    # near-the-cut, where an answer teaches the model the most. Likes have their own pool.
+    # Strictly between 0 and 1.
     random_share: float = 0.5
     # RETENTION.  The archive holds real strangers' screenshots (a profile read keeps up to a
-    # dozen full-resolution captures, ~2.4 MB per pass), so it is bounded from the first pass
-    # rather than left to someone remembering to clean it -- the same decision the opener replay
-    # corpus took (ops/OPENER-REDESIGN.md, 2026-09-06 (j)): a maximum COUNT and a maximum AGE,
-    # oldest removed first, 0 meaning unlimited for either.  A pass past either bound loses its
-    # screenshots, embedding and manifest; the owner's ANSWERS (labels, review rows) are never
-    # touched.  Applied at every AUTO run's start and after every few archived passes.
-    max_archived_passes: int = 400
-    max_age_days: float = 30.0
+    # dozen full-resolution captures, ~2.4 MB per profile), so likes and passes share a maximum
+    # COUNT and AGE from the first archive. The shipped 1500 profiles are about 3.6 GB.
+    # Oldest removed first; 0 means unlimited for either bound. A profile past either bound
+    # loses its screenshots, embedding and manifest; the owner's ANSWERS (labels, review rows)
+    # are never touched. Applied at every AUTO run's start and after every few archives.
+    max_archived_passes: int = 1500
+    max_age_days: float = 60.0
 
 
 @dataclass

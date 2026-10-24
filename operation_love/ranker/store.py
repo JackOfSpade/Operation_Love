@@ -129,22 +129,40 @@ def normalize_timestamp_datetime(
 
 
 # --- auto pass review ------------------------------------------------------------------------
-# AUTO archives every profile the model PASSES (screenshots + score + embedding) so the owner
-# can later say "I would have liked her" or "correct pass". Every answer becomes a training
-# label. Both backends share the vocabulary and the argument validation below, so SQLiteStore
-# and BigQueryStore can never disagree about what a valid archive or review is.
+# AUTO archives every profile the model PASSES and every model LIKE that landed (screenshots +
+# score + embedding) so the owner can later give their own Like/Dislike. Every answer becomes a
+# training label. Both backends share the vocabulary and the argument validation below, so
+# SQLiteStore and BigQueryStore can never disagree about what a valid archive or review is.
 #
-# `random` passes are drawn uniformly at record time (worker's `auto_review_random_share`) and
-# are the UNBIASED sample the live false-pass rate is measured on; `near_cut` passes are the
-# rest, reviewed closest-to-the-threshold first because those are the labels that move the
-# decision boundary the most.
+# The archive table keeps its historic name `auto_passes`; its `decision` column says which
+# AUTO decision a row is ("like" | "dislike"), and a NULL (a row archived before likes were)
+# reads as "dislike".
+#
+# Pools: `random` passes are drawn uniformly at record time (worker's
+# `auto_review_random_share`) and are the UNBIASED sample the live false-pass rate is measured
+# on; `near_cut` passes are the rest, reviewed closest-to-the-threshold first because those are
+# the labels that move the decision boundary the most. `likes` are the archived likes, offered
+# in uniformly random order (an unbiased sample of AUTO likes); their answers are display and
+# training data only and never reach the false-pass statistics.
+AUTO_DECISION_LIKE = "like"
+AUTO_DECISION_DISLIKE = "dislike"
+AUTO_ARCHIVE_DECISIONS = (AUTO_DECISION_LIKE, AUTO_DECISION_DISLIKE)
 AUTO_REVIEW_KIND_RANDOM = "random"
 AUTO_REVIEW_KIND_NEAR_CUT = "near_cut"
-AUTO_REVIEW_KINDS = (AUTO_REVIEW_KIND_RANDOM, AUTO_REVIEW_KIND_NEAR_CUT)
+AUTO_REVIEW_KIND_LIKES = "likes"
+# The pools of archived PASSES (the only ones the live false-pass correction reads).
+AUTO_REVIEW_PASS_KINDS = (AUTO_REVIEW_KIND_RANDOM, AUTO_REVIEW_KIND_NEAR_CUT)
+# Every pool a review can be drawn from (also the vocabulary of auto_pass_reviews.kind).
+AUTO_REVIEW_KINDS = (*AUTO_REVIEW_PASS_KINDS, AUTO_REVIEW_KIND_LIKES)
 # `labels.source` of an answer. The shared prefix is what ranker/threshold.py keys on to tell a
 # review label from a MANUAL calibration label (a review label must never calibrate the recall
 # threshold it is also being used to measure).
 AUTO_REVIEW_SOURCE_PREFIX = "auto_review"
+_AUTO_REVIEW_LABEL_SOURCES = {
+    AUTO_REVIEW_KIND_RANDOM: f"{AUTO_REVIEW_SOURCE_PREFIX}_random",
+    AUTO_REVIEW_KIND_NEAR_CUT: f"{AUTO_REVIEW_SOURCE_PREFIX}_near_cut",
+    AUTO_REVIEW_KIND_LIKES: f"{AUTO_REVIEW_SOURCE_PREFIX}_like",
+}
 DEFAULT_AUTO_REVIEW_WINDOW = 200
 # What "Remove last saved label" says when the newest label is an answer to an auto-pass review
 # (both backends raise ValueError with it; the hub shows it to the owner as it is).
@@ -155,8 +173,8 @@ REVIEW_ANSWER_IS_LATEST_MESSAGE = (
 
 
 def auto_review_label_source(kind: str) -> str:
-    """The `labels.source` an answer to a pass of this kind is stored under."""
-    return f"{AUTO_REVIEW_SOURCE_PREFIX}_{_require_auto_review_kind(kind)}"
+    """The `labels.source` an answer to an archived decision of this kind is stored under."""
+    return _AUTO_REVIEW_LABEL_SOURCES[_require_auto_review_kind(kind)]
 
 
 def _require_auto_review_kind(kind: object) -> str:
@@ -165,6 +183,30 @@ def _require_auto_review_kind(kind: object) -> str:
             f"auto pass review kind must be one of {AUTO_REVIEW_KINDS!r} (got {kind!r})"
         )
     return str(kind)
+
+
+def _require_archive_decision(decision: object) -> str:
+    if type(decision) is not str or decision not in AUTO_ARCHIVE_DECISIONS:
+        raise ValueError(
+            f"auto archive decision must be one of {AUTO_ARCHIVE_DECISIONS!r} "
+            f"(got {decision!r})"
+        )
+    return decision
+
+
+def stored_archive_decision(value: object, profile_id: str) -> str:
+    """An archived row's stored decision; NULL (archived before likes were) is "dislike".
+
+    Anything else outside the vocabulary is a damaged row: it raises rather than guessing a
+    pool, because the pool decides which statistic the answer feeds.
+    """
+    if value is None:
+        return AUTO_DECISION_DISLIKE
+    if type(value) is not str or value not in AUTO_ARCHIVE_DECISIONS:
+        raise ValueError(
+            f"archived auto decision {profile_id!r} has no valid decision (got {value!r})"
+        )
+    return value
 
 
 def _require_text(value: object, name: str) -> str:
@@ -235,12 +277,14 @@ def doomed_auto_passes(
     max_age_days: float | None,
     now: float,
 ) -> list[tuple[str, str]]:
-    """The ``(app, profile_id)`` of every archived pass retention removes.
+    """The ``(app, profile_id)`` of every archived AUTO decision retention removes.
 
-    ``passes`` is ``(app, profile_id, created_at epoch)``, any order.  A pass goes when it is
-    older than ``max_age_days`` OR is not among the ``max_passes`` newest (oldest first), whether
-    or not the owner has answered it: the photos and embedding of a stranger have no use once
-    the answer (a label, which keeps its own embedding) is recorded or the pass has gone stale.
+    ``passes`` is ``(app, profile_id, created_at epoch)``, any order, likes and passes alike:
+    the bounds cover every archived decision, not each decision separately.  A row goes when it
+    is older than ``max_age_days`` OR is not among the ``max_passes`` newest (oldest first),
+    whether or not the owner has answered it: the photos and embedding of a stranger have no use
+    once the answer (a label, which keeps its own embedding) is recorded or the row has gone
+    stale.
     """
     ordered = sorted(passes, key=lambda p: (p[2], p[1]), reverse=True)  # newest first
     horizon = None if max_age_days is None else now - max_age_days * 86400.0
@@ -278,14 +322,18 @@ def validate_auto_pass(
     threshold: object,
     embedding: object,
     random_sample: object,
+    decision: object = AUTO_DECISION_DISLIKE,
 ) -> dict:
-    """Validate and normalise the scalar half of a pass archive; raises ValueError.
+    """Validate and normalise the scalar half of an AUTO decision archive; raises ValueError.
 
     Everything here is a CALLER bug rather than a transient failure, so it raises instead of
     returning False: the False return is reserved for "the photos could not be archived".
-    ``random_sample`` must be a real bool -- it decides which pool the pass is reviewed in and
+    ``random_sample`` must be a real bool -- it decides which pool a pass is reviewed in and
     therefore which statistic its answer feeds, so a truthy string must not slip through.
+    ``decision`` is "dislike" (a model pass) or "like" (a landed model like); a like is never
+    part of the random pass sample, so its ``random_sample`` is normalised to False.
     """
+    decision = _require_archive_decision(decision)
     if type(random_sample) is not bool:
         raise ValueError(
             f"auto pass random_sample must be a bool (got {random_sample!r})"
@@ -302,7 +350,8 @@ def validate_auto_pass(
         "score": _finite_float(score, "score"),
         "threshold": _finite_float(threshold, "threshold"),
         "embedding": vector,
-        "random_sample": random_sample,
+        "random_sample": random_sample and decision == AUTO_DECISION_DISLIKE,
+        "decision": decision,
     }
 
 
@@ -671,17 +720,20 @@ CREATE TABLE IF NOT EXISTS opener_retractions (
     reason TEXT NOT NULL, evidence_ref TEXT NOT NULL, created_at REAL NOT NULL,
     PRIMARY KEY (correction_id, opener_created_at)
 );
--- AUTO pass archive + owner review (see the "auto pass review" helpers above). Brand-new
--- tables: CREATE ... IF NOT EXISTS alone reaches an existing db file, no ALTER needed. They are
--- deliberately NOT part of `labels`/`decisions` or the retraction machinery: an archived pass
--- is not a label until the owner answers it, and the answer is written through add_label.
+-- AUTO decision archive + owner review (see the "auto pass review" helpers above). Brand-new
+-- tables: CREATE ... IF NOT EXISTS alone reaches an existing db file. They are deliberately NOT
+-- part of `labels`/`decisions` or the retraction machinery: an archived decision is not a
+-- label until the owner answers it, and the answer is written through add_label.
 -- (app, profile_id) is unique: profile_id is a per-card uuid, so a repeat is a bug, and the
--- UNIQUE index on reviews is what makes "one answer per pass" hold across processes.
+-- UNIQUE index on reviews is what makes "one answer per archived decision" hold across
+-- processes. `auto_passes.decision` ("like" | "dislike"; NULL reads "dislike") was added after
+-- the table shipped, so it ALSO needs its ALTER in _initialize_schema.
 CREATE TABLE IF NOT EXISTS auto_passes (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, app TEXT NOT NULL,
     profile_id TEXT NOT NULL, created_at REAL NOT NULL, score REAL NOT NULL,
     threshold REAL NOT NULL, embedding TEXT NOT NULL, photo_count INTEGER NOT NULL,
-    profile_name TEXT, random_sample INTEGER NOT NULL, capture_truncated INTEGER NOT NULL
+    profile_name TEXT, random_sample INTEGER NOT NULL, capture_truncated INTEGER NOT NULL,
+    decision TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS auto_passes_identity ON auto_passes (app, profile_id);
 CREATE TABLE IF NOT EXISTS auto_pass_photos (
@@ -749,6 +801,35 @@ _LABEL_NOT_RETRACTED = (
     "AND r.source=l.source AND COALESCE(r.profile_id,'')=COALESCE(l.profile_id,'') "
     "AND r.label_created_at=l.created_at)"
 )
+
+# An archived row's AUTO decision (alias `p`), a NULL -- a row archived before likes were --
+# read as "dislike". Every auto_passes read that must tell a like from a pass uses this text.
+_ARCHIVE_DECISION = f"COALESCE(p.decision, '{AUTO_DECISION_DISLIKE}')"
+_ARCHIVED_PASS = f"{_ARCHIVE_DECISION} = '{AUTO_DECISION_DISLIKE}'"
+_ARCHIVED_LIKE = f"{_ARCHIVE_DECISION} = '{AUTO_DECISION_LIKE}'"
+_UNREVIEWED = (
+    "NOT EXISTS (SELECT 1 FROM auto_pass_reviews r "
+    "WHERE r.app = p.app AND r.profile_id = p.profile_id)"
+)
+_ARCHIVED_PHOTOS_COMPLETE = (
+    "p.photo_count > 0 AND (SELECT COUNT(DISTINCT ph.photo_index) "
+    "FROM auto_pass_photos ph WHERE ph.app=p.app AND ph.profile_id=p.profile_id "
+    "AND ph.photo_index >= 0 AND ph.photo_index < p.photo_count "
+    "AND LENGTH(ph.photo) > 0) = p.photo_count"
+)
+
+
+def _pool_predicates(kind: str) -> list[str]:
+    """WHERE predicates (alias ``p``) selecting the archived rows of review pool ``kind``.
+
+    ``random`` / ``near_cut`` are PASSES only, split by ``random_sample``; ``likes`` are the
+    archived likes whatever their (always False) ``random_sample``.  Constant SQL: ``kind`` is
+    validated by the caller.
+    """
+    if kind == AUTO_REVIEW_KIND_LIKES:
+        return [_ARCHIVED_LIKE]
+    flag = 1 if kind == AUTO_REVIEW_KIND_RANDOM else 0
+    return [_ARCHIVED_PASS, f"p.random_sample = {flag}"]
 
 
 class SQLiteStore:
@@ -866,6 +947,14 @@ class SQLiteStore:
             self.con.execute(
                 "ALTER TABLE opener_rejections ADD COLUMN prompt_sha256 TEXT"
             )
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+        # auto_passes.decision: the archive started holding landed AUTO likes as well as model
+        # passes. Same two-part rule; nullable, never backfilled -- every row written before it
+        # is a pass, and every reader treats NULL as "dislike".
+        try:
+            self.con.execute("ALTER TABLE auto_passes ADD COLUMN decision TEXT")
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
@@ -1859,15 +1948,18 @@ class SQLiteStore:
         profile_name="",
         random_sample,
         capture_truncated=False,
+        decision=AUTO_DECISION_DISLIKE,
     ) -> bool:
-        """Archive one AUTO pass (manifest + the exact screenshots the model saw).
+        """Archive one AUTO decision (manifest + the exact screenshots the model saw).
 
-        Never writes a label, a decision, or a `profiles`/`profile_photos` row: the training
-        archive is what retraction planning reasons about, and an unanswered pass is not
-        training data. Returns False (after a loud print) when the photos cannot be archived or
-        the pass was already archived; raises ValueError for malformed arguments. The manifest
-        and every photo commit in ONE transaction, so a crash can never leave a pass the owner
-        is shown without its screenshots.
+        ``decision`` is "dislike" for a model pass (the default) or "like" for a landed model
+        like, whose ``random_sample`` is stored False. Never writes a label, a decision, or a
+        `profiles`/`profile_photos` row: the training archive is what retraction planning
+        reasons about, and an unanswered archive row is not training data. Returns False (after
+        a loud print) when the photos cannot be archived or the profile was already archived;
+        raises ValueError for malformed arguments. The manifest and every photo commit in ONE
+        transaction, so a crash can never leave a row the owner is shown without its
+        screenshots.
         """
         args = validate_auto_pass(
             run_id=run_id,
@@ -1877,6 +1969,7 @@ class SQLiteStore:
             threshold=threshold,
             embedding=embedding,
             random_sample=random_sample,
+            decision=decision,
         )
         photo_list = clean_auto_pass_photos(photos, args["profile_id"])
         if photo_list is None:
@@ -1888,7 +1981,7 @@ class SQLiteStore:
                 self.con.execute(
                     "INSERT INTO auto_passes (run_id, app, profile_id, created_at, score,"
                     " threshold, embedding, photo_count, profile_name, random_sample,"
-                    " capture_truncated) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    " capture_truncated, decision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         args["run_id"],
                         args["app"],
@@ -1901,6 +1994,7 @@ class SQLiteStore:
                         str(profile_name or ""),
                         int(args["random_sample"]),
                         int(bool(capture_truncated)),
+                        args["decision"],
                     ),
                 )
                 for index, photo in enumerate(photo_list):
@@ -1934,28 +2028,39 @@ class SQLiteStore:
                 raise
         return True
 
+    def _pool_count_locked(self, kind: str, app: str | None) -> int:
+        """Unreviewed archived rows in pool ``kind`` (caller holds the lock)."""
+        where = [*_pool_predicates(kind), _UNREVIEWED, _ARCHIVED_PHOTOS_COMPLETE]
+        params: list = []
+        if app is not None:
+            where.append("p.app = ?")
+            params.append(app)
+        return int(
+            self.con.execute(
+                "SELECT COUNT(*) FROM auto_passes p WHERE " + " AND ".join(where),
+                params,
+            ).fetchone()[0]
+        )
+
     def next_auto_pass_for_review(self, *, kind, app=None) -> dict | None:
-        """One unreviewed pass of ``kind``, or None when that pool is empty.
+        """One unreviewed archived decision of ``kind``, or None when that pool is empty.
 
         ``random``: uniform among the random_sample passes (the unbiased sample).
-        ``near_cut``: among the rest, the one closest below its own threshold, i.e. the
-        largest (score - threshold) -- the answers that teach the boundary the most.
+        ``near_cut``: among the other passes, the one closest below its own threshold, i.e.
+        the largest (score - threshold) -- the answers that teach the boundary the most.
+        ``likes``: uniform among the archived likes (an unbiased sample of AUTO likes).
         """
         kind = _require_auto_review_kind(kind)
         app = _require_optional_app(app)
-        where = [
-            "p.random_sample = ?",
-            "NOT EXISTS (SELECT 1 FROM auto_pass_reviews r "
-            "WHERE r.app = p.app AND r.profile_id = p.profile_id)",
-        ]
-        params: list = [1 if kind == AUTO_REVIEW_KIND_RANDOM else 0]
+        where = [*_pool_predicates(kind), _UNREVIEWED, _ARCHIVED_PHOTOS_COMPLETE]
+        params: list = []
         if app is not None:
             where.append("p.app = ?")
             params.append(app)
         order = (
-            "RANDOM()"
-            if kind == AUTO_REVIEW_KIND_RANDOM
-            else "(p.score - p.threshold) DESC, p.created_at, p.id"
+            "(p.score - p.threshold) DESC, p.created_at, p.id"
+            if kind == AUTO_REVIEW_KIND_NEAR_CUT
+            else "RANDOM()"
         )
         with self._lock:
             row = self.con.execute(
@@ -1995,20 +2100,23 @@ class SQLiteStore:
         return None if row is None else bytes(row[0])
 
     def record_auto_pass_review(self, *, profile_id, would_like) -> dict:
-        """Record the owner's answer to one archived pass: a review row AND a training label.
+        """Record the owner's answer to one archived decision: a review row AND a label.
 
-        Raises ValueError for an unknown, ambiguous or already-reviewed pass (an answer is
-        final: a second tap must not become a second label). The label and the review row
-        commit in ONE transaction -- a crash leaves neither, never a review without its label
-        or a label without its review.
+        ``would_like`` is the owner's own Like (True) / Dislike (False), for an archived pass
+        or an archived like alike; the label source follows the row's pool
+        (``auto_review_random`` / ``auto_review_near_cut`` / ``auto_review_like``). Raises
+        ValueError for an unknown, ambiguous or already-reviewed row (an answer is final: a
+        second tap must not become a second label). The label and the review row commit in ONE
+        transaction -- a crash leaves neither, never a review without its label or a label
+        without its review.
         """
         _require_text(profile_id, "profile_id")
         if type(would_like) is not bool:
             raise ValueError(f"would_like must be a bool (got {would_like!r})")
         with self._lock:
             passes = self.con.execute(
-                "SELECT run_id, app, embedding, photo_count, profile_name, random_sample"
-                " FROM auto_passes WHERE profile_id=?",
+                "SELECT run_id, app, embedding, photo_count, profile_name, random_sample,"
+                " decision, score, threshold FROM auto_passes WHERE profile_id=?",
                 (profile_id,),
             ).fetchall()
             if not passes:
@@ -2018,16 +2126,30 @@ class SQLiteStore:
                     f"profile {profile_id!r} matches {len(passes)} archived auto passes; "
                     "refusing to guess which one is being answered"
                 )
-            run_id, app, embedding_json, photo_count, profile_name, random_sample = (
-                passes[0]
-            )
-            if random_sample not in (0, 1):
+            (
+                run_id,
+                app,
+                embedding_json,
+                photo_count,
+                profile_name,
+                random_sample,
+                decision,
+                score,
+                threshold,
+            ) = passes[0]
+            decision = stored_archive_decision(decision, profile_id)
+            if decision == AUTO_DECISION_LIKE:
+                kind = AUTO_REVIEW_KIND_LIKES
+            elif random_sample not in (0, 1):
                 raise ValueError(
                     f"archived auto pass {profile_id!r} has no valid random_sample flag"
                 )
-            kind = (
-                AUTO_REVIEW_KIND_RANDOM if random_sample else AUTO_REVIEW_KIND_NEAR_CUT
-            )
+            else:
+                kind = (
+                    AUTO_REVIEW_KIND_RANDOM
+                    if random_sample
+                    else AUTO_REVIEW_KIND_NEAR_CUT
+                )
             source = auto_review_label_source(kind)
             if self.con.execute(
                 "SELECT 1 FROM auto_pass_reviews WHERE app=? AND profile_id=?",
@@ -2061,12 +2183,19 @@ class SQLiteStore:
             except BaseException:
                 self.con.rollback()
                 raise
-        return {"kind": kind, "label_source": source}
+        return {
+            "kind": kind,
+            "label_source": source,
+            "decision": decision,
+            "score": float(score),
+            "threshold": float(threshold),
+            "would_like": would_like,
+        }
 
     def undo_latest_auto_review(self) -> dict | None:
-        """Undo the newest answer to an archived pass: delete its label AND its review row.
+        """Undo the newest answer to an archived pass or like: delete its label AND review row.
 
-        The pass goes back to the unreviewed pool and can be answered again.  Returns the
+        The row goes back to its unreviewed pool and can be answered again.  Returns the
         undone answer (``profile_id``, ``profile_name``, ``kind``, ``would_like``), or ``None``
         when there is no answer to undo.  One transaction, so a crash can never leave a review
         row without its label or a label without its review row.
@@ -2115,13 +2244,14 @@ class SQLiteStore:
         }
 
     def prune_auto_passes(self, *, max_passes=None, max_age_days=None, now=None) -> int:
-        """Delete archived passes (manifest + embedding + screenshots) beyond the retention.
+        """Delete archived AUTO decisions (manifest + embedding + screenshots) past retention.
 
-        A pass goes when it is older than ``max_age_days`` or not among the ``max_passes``
-        newest, answered or not; ``None``/0 leaves that bound off.  Returns how many passes
-        were removed.  The owner's ANSWERS are untouched: labels, review rows and the decisions
-        that the live false-pass estimate reads all stay.  One transaction.  SQLite does not
-        shrink the file, but freed pages are reused, so the database stops growing.
+        The bounds cover every archived row, likes and passes together: a row goes when it is
+        older than ``max_age_days`` or not among the ``max_passes`` newest, answered or not;
+        ``None``/0 leaves that bound off.  Returns how many rows were removed.  The owner's
+        ANSWERS are untouched: labels, review rows and the decisions that the live false-pass
+        estimate reads all stay.  One transaction.  SQLite does not shrink the file, but freed
+        pages are reused, so the database stops growing.
         """
         max_passes, max_age_days = require_auto_pass_retention(max_passes, max_age_days)
         if max_passes is None and max_age_days is None:
@@ -2161,11 +2291,16 @@ class SQLiteStore:
         ``random_reviewed`` / ``random_would_like`` cover the most recent ``window`` random
         reviews only (a rolling estimate that tracks the current model); near-cut counts are
         cumulative. ``auto_likes`` / ``auto_passes`` count AUTO decisions made since the first
-        archived pass's own decision -- the denominator of "how much of what AUTO decides is a
-        pass" -- and are 0/0 while nothing has been archived.  ``auto_model_passes`` is the part
-        of ``auto_passes`` that is a genuine MODEL pass (it entered the archive); the rest are
-        likes the session policy or like-ratio ceiling demoted, which the random pool never
-        samples.
+        archived PASS's own decision -- the denominator of "how much of what AUTO decides is a
+        pass" -- and are 0/0 while no pass has been archived.  ``auto_model_passes`` is the
+        part of ``auto_passes`` that is a genuine MODEL pass (it entered the archive); the rest
+        are likes the session policy or like-ratio ceiling demoted, which the random pool never
+        samples.  Archived likes never reach any of those keys.
+
+        ``likes`` is a separate, display-only section over the archived likes:
+        ``{"archived", "reviewed", "agreed"}`` -- like rows still archived, owner answers to
+        archived likes (cumulative), and how many of those answers were Like (agreement).
+        ``live_adjustment`` never reads it.
         """
         app = _require_optional_app(app)
         window = _require_window(window)
@@ -2173,17 +2308,8 @@ class SQLiteStore:
         app_params: list = [] if app is None else [app]
         with self._lock:
 
-            def pending(random_flag: int) -> int:
-                clause = "" if app is None else " AND p.app=?"
-                return int(
-                    self.con.execute(
-                        "SELECT COUNT(*) FROM auto_passes p WHERE p.random_sample=?"
-                        + clause
-                        + " AND NOT EXISTS (SELECT 1 FROM auto_pass_reviews r"
-                        " WHERE r.app=p.app AND r.profile_id=p.profile_id)",
-                        [random_flag, *app_params],
-                    ).fetchone()[0]
-                )
+            def pending(kind: str) -> int:
+                return self._pool_count_locked(kind, app)
 
             recent_random = self.con.execute(
                 "SELECT COUNT(*), COALESCE(SUM(would_like), 0) FROM ("
@@ -2204,19 +2330,20 @@ class SQLiteStore:
             # decision that started the window and bias pass_share by one pass (3 archived
             # passes read back as auto_passes == 2).  The join is by the pass's lineage
             # profile_id, so it is exact rather than a time tolerance; a pass whose decision row
-            # is missing falls back to its own timestamp.
+            # is missing falls back to its own timestamp.  Archived LIKES never open it: the
+            # window is "since passes were archived", as it was before likes were.
             opened_at = [
                 row[0]
                 for row in (
                     self.con.execute(
-                        "SELECT MIN(created_at) FROM auto_passes WHERE 1=1"
-                        + app_clause,
+                        f"SELECT MIN(p.created_at) FROM auto_passes p WHERE {_ARCHIVED_PASS}"
+                        + app_clause.replace("app", "p.app"),
                         app_params,
                     ).fetchone(),
                     self.con.execute(
                         "SELECT MIN(d.created_at) FROM decisions d JOIN auto_passes p"
                         " ON p.app=d.app AND p.profile_id=d.profile_id"
-                        " WHERE d.source='auto' AND d.decision='dislike'"
+                        f" WHERE d.source='auto' AND d.decision='dislike' AND {_ARCHIVED_PASS}"
                         + app_clause.replace("app", "d.app"),
                         app_params,
                     ).fetchone(),
@@ -2251,16 +2378,27 @@ class SQLiteStore:
                         "SELECT COUNT(*) FROM decisions d"
                         " WHERE d.source='auto' AND d.decision='dislike'"
                         " AND EXISTS (SELECT 1 FROM auto_passes p"
-                        " WHERE p.app=d.app AND p.profile_id=d.profile_id)"
+                        f" WHERE p.app=d.app AND p.profile_id=d.profile_id AND {_ARCHIVED_PASS})"
                         + app_clause.replace("app", "d.app")
                         + " AND d.created_at >= ?",
                         [*app_params, window_start],
                     ).fetchone()[0]
                 )
 
+            likes_archived = self.con.execute(
+                f"SELECT COUNT(*) FROM auto_passes p WHERE {_ARCHIVED_LIKE}"
+                + app_clause.replace("app", "p.app"),
+                app_params,
+            ).fetchone()
+            likes_reviewed = self.con.execute(
+                "SELECT COUNT(*), COALESCE(SUM(would_like), 0) FROM auto_pass_reviews"
+                " WHERE kind=?" + app_clause,
+                [AUTO_REVIEW_KIND_LIKES, *app_params],
+            ).fetchone()
+
             stats = {
-                "pending_random": pending(1),
-                "pending_near_cut": pending(0),
+                "pending_random": pending(AUTO_REVIEW_KIND_RANDOM),
+                "pending_near_cut": pending(AUTO_REVIEW_KIND_NEAR_CUT),
                 "random_reviewed": int(recent_random[0]),
                 "random_would_like": int(recent_random[1]),
                 "near_cut_reviewed": int(near_cut[0]),
@@ -2268,8 +2406,34 @@ class SQLiteStore:
                 "auto_likes": decisions("like"),
                 "auto_passes": decisions("dislike"),
                 "auto_model_passes": model_passes(),
+                "likes": {
+                    "archived": int(likes_archived[0]),
+                    "reviewed": int(likes_reviewed[0]),
+                    "agreed": int(likes_reviewed[1]),
+                },
             }
         return stats
+
+    def auto_review_waiting(self, *, app=None) -> dict:
+        """Unreviewed archived rows per pool, for the hub's "N waiting" count.
+
+        ``{"likes", "random", "near_cut", "total"}`` (ints): exactly the rows
+        ``next_auto_pass_for_review`` can still offer, so the count and the card agree.
+        """
+        app = _require_optional_app(app)
+        with self._lock:
+            waiting = {
+                AUTO_REVIEW_KIND_LIKES: self._pool_count_locked(
+                    AUTO_REVIEW_KIND_LIKES, app
+                ),
+                AUTO_REVIEW_KIND_RANDOM: self._pool_count_locked(
+                    AUTO_REVIEW_KIND_RANDOM, app
+                ),
+                AUTO_REVIEW_KIND_NEAR_CUT: self._pool_count_locked(
+                    AUTO_REVIEW_KIND_NEAR_CUT, app
+                ),
+            }
+        return {**waiting, "total": sum(waiting.values())}
 
     def record_spend(self, run_id, model, usage: Usage, cost):
         with self._lock:

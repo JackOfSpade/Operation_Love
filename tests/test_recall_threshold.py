@@ -1626,7 +1626,7 @@ def test_supervisor_retention_defaults_to_the_shipped_bounds(monkeypatch, tmp_pa
     assert [
         (w["auto_review_max_passes"], w["auto_review_max_age_days"])
         for w in spy.workers
-    ] == [(400, 30.0)]
+    ] == [(1500, 60.0)]
 
 
 def test_supervisor_retention_still_applies_when_archiving_is_switched_off(
@@ -1644,7 +1644,7 @@ def test_supervisor_retention_still_applies_when_archiving_is_switched_off(
     assert [
         (w["auto_review_max_passes"], w["auto_review_max_age_days"])
         for w in spy.workers
-    ] == [(400, 30.0)]
+    ] == [(1500, 60.0)]
 
 
 def test_auto_review_retention_helper():

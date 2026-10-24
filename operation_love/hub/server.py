@@ -236,7 +236,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _review_image(self, data: bytes, media_type: str) -> None:
-        """Serve one archived AUTO pass photo.
+        """Serve one archived AUTO pass photo, or one photo card cut from its frames.
 
         Same hardening as `_training_image` -- these are pixels of real people, so never let
         the browser cache them -- with the media type chosen by the state layer from the
@@ -400,8 +400,28 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._json({"error": "not found"}, 404)
 
+    def _auto_review_profile_id(self, query: dict) -> str | None:
+        """The request's validated ``profile_id``, or ``None`` after answering 400."""
+        valid_id, profile_id, id_error = validate_auto_review_profile_id(
+            self._query_value(query, "profile_id")
+        )
+        if not valid_id or profile_id is None:
+            self._json({"error": id_error}, 400)
+            return None
+        return profile_id
+
+    def _auto_review_index(self, query: dict) -> int | None:
+        """The request's validated photo ``index``, or ``None`` after answering 400."""
+        valid_index, index, index_error = validate_auto_review_index(
+            self._query_value(query, "index")
+        )
+        if not valid_index or index is None:
+            self._json({"error": index_error}, 400)
+            return None
+        return index
+
     def _auto_review_get(self, path: str) -> None:
-        """GET routes of the AUTO pass-review card (everything is validated before the state)."""
+        """GET routes of the AUTO review card (everything is validated before the state)."""
         query = parse_qs(urlsplit(self.path).query)
         if path == "/api/auto-review/next":
             valid, kind, error = validate_auto_review_kind(
@@ -412,24 +432,32 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             code, payload = self.state.auto_review_next(kind)
             self._json(payload, code)
-        elif path == "/api/auto-review/image":
-            valid_id, profile_id, id_error = validate_auto_review_profile_id(
-                self._query_value(query, "profile_id")
-            )
-            if not valid_id or profile_id is None:
-                self._json({"error": id_error}, 400)
+        elif path in ("/api/auto-review/image", "/api/auto-review/card"):
+            profile_id = self._auto_review_profile_id(query)
+            if profile_id is None:
                 return
-            valid_index, index, index_error = validate_auto_review_index(
-                self._query_value(query, "index")
-            )
-            if not valid_index or index is None:
-                self._json({"error": index_error}, 400)
+            index = self._auto_review_index(query)
+            if index is None:
                 return
-            code, data, info = self.state.auto_review_image(profile_id, index)
+            serve = (
+                self.state.auto_review_image
+                if path == "/api/auto-review/image"
+                else self.state.auto_review_card_image
+            )
+            code, data, info = serve(profile_id, index)
             if code == 200 and data is not None:
                 self._review_image(data, info)
             else:
                 self._json({"error": info}, code)
+        elif path == "/api/auto-review/cards":
+            profile_id = self._auto_review_profile_id(query)
+            if profile_id is None:
+                return
+            code, payload = self.state.auto_review_cards(profile_id)
+            self._json(payload, code)
+        elif path == "/api/auto-review/waiting":
+            code, payload = self.state.auto_review_waiting_snapshot()
+            self._json(payload, code)
         elif path == "/api/auto-review/stats":
             code, payload = self.state.auto_review_stats_snapshot()
             self._json(payload, code)

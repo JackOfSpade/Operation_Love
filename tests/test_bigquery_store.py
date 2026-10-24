@@ -3925,3 +3925,68 @@ def test_joined_opener_outcomes_treats_missing_optional_table_as_empty(monkeypat
 
     with pytest.raises(NotFound):
         _store(_MissingOtherBQ()).joined_opener_outcomes("hinge")
+
+
+def test_ensure_tables_runs_auto_passes_decision_migration():
+    """`auto_passes` shipped before AUTO likes were archived, so the live table lacks
+    `decision`. CREATE TABLE IF NOT EXISTS is a no-op against it and this ALTER is the only
+    thing that puts the column there; without it the first archived like is rejected as "no
+    such field: decision" in production while every fresh-table test passes. A second start
+    against the migrated table runs no DDL."""
+    from operation_love.ranker.bigquery_store import _MIGRATIONS, _TABLES
+
+    assert (
+        "ALTER TABLE `{auto_passes}` ADD COLUMN IF NOT EXISTS decision STRING;"
+        in _MIGRATIONS
+    )
+    assert _TABLES["auto_passes"].endswith(", decision STRING")
+
+    client = _SchemaAwareBQ(missing=[("auto_passes", "decision")])
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
+    ddl = "\n".join(client.queries)
+    assert (
+        "ALTER TABLE `proj.ds.auto_passes`\nADD COLUMN IF NOT EXISTS decision STRING;"
+        in ddl
+    )
+    assert "CREATE TABLE IF NOT EXISTS `proj.ds.auto_passes`" not in ddl
+
+    before = len(client.queries)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
+    assert "ALTER TABLE" not in "\n".join(client.queries[before:])
+
+
+def test_ensure_tables_declares_decision_on_the_auto_passes_create_table():
+    """CREATE half: a project without `auto_passes` gets the column in the CREATE itself and
+    needs no ALTER afterwards."""
+    client = _SchemaAwareBQ(missing=[])
+    client.schema.pop("auto_passes")
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
+    ddl = "\n".join(client.queries)
+    create = next(
+        line
+        for line in ddl.splitlines()
+        if line.startswith("CREATE TABLE IF NOT EXISTS `proj.ds.auto_passes`")
+    )
+    assert "decision STRING" in create
+    assert "ALTER TABLE `proj.ds.auto_passes`" not in ddl

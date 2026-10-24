@@ -475,7 +475,8 @@ def test_both_stores_expose_the_same_keyword_only_surface_as_the_protocol():
 def test_review_label_sources_share_the_prefix_the_ranker_keys_on():
     assert auto_review_label_source("random") == "auto_review_random"
     assert auto_review_label_source("near_cut") == "auto_review_near_cut"
-    assert AUTO_REVIEW_KINDS == ("random", "near_cut")
+    assert auto_review_label_source("likes") == "auto_review_like"
+    assert AUTO_REVIEW_KINDS == ("random", "near_cut", "likes")
     with pytest.raises(ValueError):
         auto_review_label_source("whatever")
 
@@ -709,7 +710,14 @@ def test_review_writes_a_training_label_and_a_review_row(
 
     result = h.store.record_auto_pass_review(profile_id="p1", would_like=True)
 
-    assert result == {"kind": kind, "label_source": source}
+    assert result == {
+        "kind": kind,
+        "label_source": source,
+        "decision": "dislike",
+        "score": 0.4,
+        "threshold": 0.5,
+        "would_like": True,
+    }
     (label,) = h.labels()
     assert (label["run_id"], label["app"], label["profile_id"]) == (
         "run-7",
@@ -873,6 +881,7 @@ def test_stats_are_all_zero_on_an_empty_store(h):
         "auto_likes": 0,
         "auto_passes": 0,
         "auto_model_passes": 0,
+        "likes": {"archived": 0, "reviewed": 0, "agreed": 0},
     }
 
 
@@ -923,6 +932,7 @@ def test_stats_count_pending_reviewed_and_auto_decisions_since_the_first_pass(h)
             "auto_likes": 4,
             "auto_passes": 6,
             "auto_model_passes": 0,  # these decision rows carry no lineage id: none entered the archive
+            "likes": {"archived": 0, "reviewed": 0, "agreed": 0},
         }
     )
     assert h.store.auto_review_stats(app="hinge") == {
@@ -935,6 +945,7 @@ def test_stats_count_pending_reviewed_and_auto_decisions_since_the_first_pass(h)
         "auto_likes": 3,
         "auto_passes": 5,
         "auto_model_passes": 0,
+        "likes": {"archived": 0, "reviewed": 0, "agreed": 0},
     }
     assert h.store.auto_review_stats(app="bumble") == {
         "pending_random": 1,
@@ -946,6 +957,7 @@ def test_stats_count_pending_reviewed_and_auto_decisions_since_the_first_pass(h)
         "auto_likes": 1,
         "auto_passes": 1,
         "auto_model_passes": 0,
+        "likes": {"archived": 0, "reviewed": 0, "agreed": 0},
     }
 
 
@@ -1555,6 +1567,10 @@ def test_sqlite_review_is_one_transaction_a_failing_review_row_leaves_no_label(
         assert store.record_auto_pass_review(profile_id="p1", would_like=True) == {
             "kind": "near_cut",
             "label_source": "auto_review_near_cut",
+            "decision": "dislike",
+            "score": 0.4,
+            "threshold": 0.5,
+            "would_like": True,
         }
         counts = _counts(store)
         assert counts["labels"] == 1 and counts["auto_pass_reviews"] == 1
@@ -1773,15 +1789,18 @@ def test_new_tables_are_declared_with_the_spec_columns_and_types():
     assert _TABLES["auto_passes"] == (
         "run_id STRING, app STRING, profile_id STRING, created_at TIMESTAMP, score FLOAT64, "
         "threshold FLOAT64, embedding ARRAY<FLOAT64>, photo_count INT64, profile_name STRING, "
-        "random_sample BOOL, capture_truncated BOOL"
+        "random_sample BOOL, capture_truncated BOOL, decision STRING"
     )
     # "same columns as profile_photos": the shared uploader's rows are inserted verbatim.
     assert _TABLES["auto_pass_photos"] == _TABLES["profile_photos"]
     assert _TABLES["auto_pass_reviews"] == (
         "profile_id STRING, app STRING, reviewed_at TIMESTAMP, would_like BOOL, kind STRING"
     )
-    # No migration line is needed (and none must exist): they are whole new tables.
-    assert not [m for m in bq_module._MIGRATIONS if "auto_pass" in m]
+    # The tables shipped whole, so only the one column added later (auto_passes.decision,
+    # for archived likes) has a migration line.
+    assert [m for m in bq_module._MIGRATIONS if "auto_pass" in m] == [
+        "ALTER TABLE `{auto_passes}` ADD COLUMN IF NOT EXISTS decision STRING;"
+    ]
 
 
 def test_a_project_without_the_new_tables_gets_them_created_and_nothing_else():
@@ -1925,7 +1944,7 @@ def test_bq_archive_after_close_is_refused_not_silently_lost(bq):
 
 
 def test_bq_incomplete_photo_set_is_never_offered_or_counted(bq):
-    """The guard behind `ph.stored >= p.photo_count`: no screenshots, no review."""
+    """The complete-photo-sequence guard: no screenshots, no review."""
     _bq_archive(bq, "whole", random_sample=True, photos=2)
     _bq_archive(bq, "torn", random_sample=True, photos=3)
     bq.store.flush()
@@ -1973,6 +1992,10 @@ def test_bq_a_hub_store_without_bucket_verification_can_review_an_earlier_runs_p
     assert hub.record_auto_pass_review(profile_id="p1", would_like=True) == {
         "kind": "random",
         "label_source": "auto_review_random",
+        "decision": "dislike",
+        "score": 0.4,
+        "threshold": 0.5,
+        "would_like": True,
     }
     hub.close()
     assert client.count("labels") == 1 and client.count("auto_pass_reviews") == 1
@@ -2141,7 +2164,8 @@ def test_bq_a_crash_between_label_and_review_is_repaired_by_the_next_process(
     # The owner answers again -- and changes their mind. The label that training already used
     # wins; the review row follows it; no second label is ever written.
     bq.client.insert_failures["auto_pass_reviews"] = 0
-    fresh.record_auto_pass_review(profile_id="p1", would_like=False)
+    recovered = fresh.record_auto_pass_review(profile_id="p1", would_like=False)
+    assert recovered["would_like"] is True  # the reveal must report the saved answer
     out = capsys.readouterr().out
     assert "already has a auto_review_random label" in out and "NOT applied" in out
     assert bq.client.count("labels") == 1

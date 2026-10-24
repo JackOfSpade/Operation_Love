@@ -31,6 +31,9 @@ from ..bigquery_validation import (
 )
 from ..costing import Usage
 from .store import (
+    AUTO_DECISION_DISLIKE,
+    AUTO_DECISION_LIKE,
+    AUTO_REVIEW_KIND_LIKES,
     AUTO_REVIEW_KIND_NEAR_CUT,
     AUTO_REVIEW_KIND_RANDOM,
     AUTO_REVIEW_SOURCE_PREFIX,
@@ -53,6 +56,7 @@ from .store import (
     photo_feature_coverage_of,
     require_auto_pass_retention,
     require_photo_feature_version,
+    stored_archive_decision,
     stored_photo_vector,
     validate_auto_pass,
     validate_photo_features,
@@ -228,23 +232,25 @@ _TABLES = {
         "correction_id STRING, run_id STRING, app STRING, opener_created_at TIMESTAMP, model STRING, "
         "opener_fingerprint STRING, reason STRING, evidence_ref STRING, created_at TIMESTAMP"
     ),
-    # AUTO pass archive + owner review (the recall-target feature). Three brand-new tables, so
-    # they need only these CREATE entries and never a _MIGRATIONS line (see the comment above
-    # `_MIGRATIONS`): they reach an existing project through `_ensure_tables`' `missing_tables`
-    # branch. Deliberately NOT in the retraction/archive snapshot machinery (retraction_run_rows,
-    # advisory_opener_run_rows): an archived pass is not a label until the owner answers it, and
-    # the answer is written to `labels` (source 'auto_review_random' / 'auto_review_near_cut')
-    # through add_label like any other label.
+    # AUTO decision archive + owner review (the recall-target feature). Three tables that
+    # shipped brand-new, so they reach an existing project through `_ensure_tables`'
+    # `missing_tables` branch. Deliberately NOT in the retraction/archive snapshot machinery
+    # (retraction_run_rows, advisory_opener_run_rows): an archived decision is not a label until
+    # the owner answers it, and the answer is written to `labels` (source 'auto_review_random' /
+    # 'auto_review_near_cut' / 'auto_review_like') through add_label like any other label.
     #
-    # `auto_passes` is the manifest (one row per archived pass: the score and threshold in
-    # force, the embedding the answer will train on, and whether it was drawn into the
-    # unbiased `random_sample` pool). `auto_pass_photos` has EXACTLY profile_photos' columns;
-    # the PNGs live in the same private bucket under `auto_passes/{app}/{run_id}/{profile_id}/`.
-    # `auto_pass_reviews` is the owner's answer; its presence is what makes a pass "reviewed".
+    # `auto_passes` is the manifest (one row per archived AUTO decision -- a model pass or a
+    # landed model like: the score and threshold in force, the embedding the answer will train
+    # on, and whether a pass was drawn into the unbiased `random_sample` pool). `decision`
+    # ("like" | "dislike") was added after the table shipped, so it has a _MIGRATIONS line too;
+    # rows written before it read back NULL and every reader treats NULL as "dislike".
+    # `auto_pass_photos` has EXACTLY profile_photos' columns; the PNGs live in the same private
+    # bucket under `auto_passes/{app}/{run_id}/{profile_id}/`. `auto_pass_reviews` is the
+    # owner's answer; its presence is what makes an archived decision "reviewed".
     "auto_passes": (
         "run_id STRING, app STRING, profile_id STRING, created_at TIMESTAMP, score FLOAT64, "
         "threshold FLOAT64, embedding ARRAY<FLOAT64>, photo_count INT64, profile_name STRING, "
-        "random_sample BOOL, capture_truncated BOOL"
+        "random_sample BOOL, capture_truncated BOOL, decision STRING"
     ),
     "auto_pass_photos": (
         "run_id STRING, app STRING, profile_id STRING, created_at TIMESTAMP, "
@@ -294,6 +300,7 @@ _MIGRATIONS = (
     "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS prompt_sha256 STRING;",
     "ALTER TABLE `{opener_rejections}` ADD COLUMN IF NOT EXISTS prompt_sha256 STRING;",
     "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS profile_key STRING;",
+    "ALTER TABLE `{auto_passes}` ADD COLUMN IF NOT EXISTS decision STRING;",
 )
 
 _MIGRATION_RE = re.compile(
@@ -346,6 +353,9 @@ def _align_identities(
 
 
 _AUTO_REVIEW_TABLES = ("auto_passes", "auto_pass_photos", "auto_pass_reviews")
+# `auto_passes` table ids known to carry the `decision` column. A column, once added, is never
+# dropped, so a positive answer is kept for the process (see `_archive_decision_sql`).
+_DECISION_COLUMN_TABLES: set[str] = set()
 # Passes removed per DML statement by `prune_auto_passes`: each id is a bound scalar parameter
 # (`@p0..@pN`), and BigQuery caps a query at 10,000 parameters, so this is nowhere near a limit
 # -- it just keeps one failed statement from rolling back an entire backlog.
@@ -2535,15 +2545,18 @@ class BigQueryStore:
         profile_name="",
         random_sample,
         capture_truncated=False,
+        decision=AUTO_DECISION_DISLIKE,
     ) -> bool:
-        """Archive one AUTO pass: the screenshots the model saw, then the manifest row.
+        """Archive one AUTO decision: the screenshots the model saw, then the manifest row.
 
-        Same contract as record_profile's archive: mandatory-but-non-fatal. Each upload is
-        retried; if any photo cannot be stored, NO manifest is written, the blobs already
-        uploaded are deleted, and False is returned (loudly) -- a pass the owner cannot see
-        cannot be judged. Never writes a label, a decision, or a profiles/profile_photos row:
-        the training archive is what retraction planning reasons about, and an unanswered
-        pass is not training data. Malformed arguments raise ValueError.
+        ``decision`` is "dislike" for a model pass (the default) or "like" for a landed model
+        like, whose ``random_sample`` is stored False. Same contract as record_profile's
+        archive: mandatory-but-non-fatal. Each upload is retried; if any photo cannot be
+        stored, NO manifest is written, the blobs already uploaded are deleted, and False is
+        returned (loudly) -- a profile the owner cannot see cannot be judged. Never writes a
+        label, a decision, or a profiles/profile_photos row: the training archive is what
+        retraction planning reasons about, and an unanswered archive row is not training data.
+        Malformed arguments raise ValueError.
         """
         args = validate_auto_pass(
             run_id=run_id,
@@ -2553,6 +2566,7 @@ class BigQueryStore:
             threshold=threshold,
             embedding=embedding,
             random_sample=random_sample,
+            decision=decision,
         )
         key = (args["app"], args["profile_id"])
         photo_list = clean_auto_pass_photos(photos, args["profile_id"])
@@ -2608,6 +2622,7 @@ class BigQueryStore:
                         "profile_name": str(profile_name or ""),
                         "random_sample": args["random_sample"],
                         "capture_truncated": bool(capture_truncated),
+                        "decision": args["decision"],
                     }
                 )
                 self._buf["auto_pass_photos"].extend(photo_rows)
@@ -2641,51 +2656,96 @@ class BigQueryStore:
                         f"BigQuery store: could not flush '{table}' before a read: {exc}"
                     )
 
-    def _auto_pass_pool_sql(self, *, random: bool, app: bool) -> str:
-        """FROM/JOIN/WHERE of the passes a review can be shown: complete, unreviewed, in pool.
+    def _archive_decision_sql(self) -> str:
+        """SQL for an archived row's AUTO decision (alias ``p``), a NULL read as "dislike".
+
+        An ``ensure=True`` store ran the migration that adds ``auto_passes.decision`` before
+        any read. A read-only store (the hub's) can open against a table no ``ensure=True``
+        store has migrated yet; every row there predates archived likes, so the decision is
+        the constant "dislike" instead of a query that fails on an unknown column. The column
+        check is one INFORMATION_SCHEMA read; a column once seen is remembered for the process,
+        a missing one is checked again on the next call (another process may migrate the table
+        and then archive a like). A failing check raises: guessing "no column" would put likes
+        in the pass pools.
+        """
+        table = self._tid("auto_passes")
+        if not self._ensure and table not in _DECISION_COLUMN_TABLES:
+            rows = self.client.query(
+                "SELECT table_name, column_name "
+                f"FROM `{self.project_id}.{self.dataset}.INFORMATION_SCHEMA.COLUMNS` "
+                "WHERE table_name = 'auto_passes'"
+            ).result()
+            if not any(
+                str(row["table_name"]) == "auto_passes"
+                and str(row["column_name"]).lower() == "decision"
+                for row in rows
+            ):
+                return f"'{AUTO_DECISION_DISLIKE}'"
+        _DECISION_COLUMN_TABLES.add(table)
+        return f"IFNULL(p.decision, '{AUTO_DECISION_DISLIKE}')"
+
+    def _auto_pass_pool_sql(
+        self, *, kind: str, app: bool, decision: str | None = None
+    ) -> str:
+        """FROM/JOIN/WHERE of the archived rows a review can be shown: complete, unreviewed,
+        in pool ``kind``.
 
         "Complete" means every photo the manifest promises is already stored: a manifest whose
         photo rows were lost (a dropped insert, a failed flush) must never be offered, because
-        an answer given without the screenshots would train the ranker on a guess. The pool
-        flag is spliced in as a constant keyword (the kind was validated before this is
-        built); every VALUE is a bound parameter (@app).
+        an answer given without the screenshots would train the ranker on a guess. ``random``
+        and ``near_cut`` hold PASSES only (split by ``random_sample``); ``likes`` holds the
+        archived likes. The pool predicate is spliced in as constant SQL (the kind was
+        validated before this is built); every VALUE is a bound parameter (@app). ``decision``
+        is a caller's already-built ``_archive_decision_sql()``, so one query checks the column
+        once.
         """
+        if decision is None:
+            decision = self._archive_decision_sql()
+        if kind == AUTO_REVIEW_KIND_LIKES:
+            pool = f"{decision} = '{AUTO_DECISION_LIKE}' "
+        else:
+            flag = "TRUE" if kind == AUTO_REVIEW_KIND_RANDOM else "FALSE"
+            pool = (
+                f"{decision} = '{AUTO_DECISION_DISLIKE}' AND p.random_sample = {flag} "
+            )
         return (
             f"FROM `{self._tid('auto_passes')}` p "
-            "JOIN (SELECT app, profile_id, COUNT(DISTINCT photo_index) AS stored "
-            f"FROM `{self._tid('auto_pass_photos')}` GROUP BY app, profile_id) ph "
-            "ON ph.app = p.app AND ph.profile_id = p.profile_id "
-            f"WHERE p.random_sample = {'TRUE' if random else 'FALSE'} "
-            "AND p.photo_count > 0 AND ph.stored >= p.photo_count "
+            f"WHERE {pool}"
+            "AND p.photo_count > 0 "
+            "AND (SELECT COUNT(DISTINCT actual.photo_index) "
+            f"FROM `{self._tid('auto_pass_photos')}` actual "
+            "WHERE actual.app = p.app AND actual.profile_id = p.profile_id "
+            "AND actual.photo_index >= 0 AND actual.photo_index < p.photo_count) "
+            "= p.photo_count "
             + ("AND p.app = @app " if app else "")
             + f"AND NOT EXISTS (SELECT 1 FROM `{self._tid('auto_pass_reviews')}` r "
             "WHERE r.app = p.app AND r.profile_id = p.profile_id)"
         )
 
     def next_auto_pass_for_review(self, *, kind, app=None) -> dict | None:
-        """One unreviewed, fully archived pass of ``kind``, or None when that pool is empty.
+        """One unreviewed, fully archived row of ``kind``, or None when that pool is empty.
 
         ``random``: uniform among the random_sample passes (the unbiased sample the live
-        false-pass rate is measured on). ``near_cut``: among the rest, the largest
-        (score - threshold), i.e. the pass closest below its own threshold.
+        false-pass rate is measured on). ``near_cut``: among the other passes, the largest
+        (score - threshold), i.e. the pass closest below its own threshold. ``likes``: uniform
+        among the archived likes (an unbiased sample of AUTO likes).
         """
         kind = _require_auto_review_kind(kind)
         app = _require_optional_app(app)
         self._flush_auto_review_buffers()
-        random_pool = kind == AUTO_REVIEW_KIND_RANDOM
         order = (
-            "RAND()"
-            if random_pool
-            else "(p.score - p.threshold) DESC, p.created_at, p.profile_id"
+            "(p.score - p.threshold) DESC, p.created_at, p.profile_id"
+            if kind == AUTO_REVIEW_KIND_NEAR_CUT
+            else "RAND()"
         )
         parameters = [] if app is None else [("app", "STRING", app)]
-        query = (
-            "SELECT p.profile_id, p.app, p.run_id, p.created_at, p.score, p.threshold, "
-            "p.photo_count, p.profile_name "
-            + self._auto_pass_pool_sql(random=random_pool, app=app is not None)
-            + f" ORDER BY {order} LIMIT 1"
-        )
         try:
+            query = (
+                "SELECT p.profile_id, p.app, p.run_id, p.created_at, p.score, p.threshold, "
+                "p.photo_count, p.profile_name "
+                + self._auto_pass_pool_sql(kind=kind, app=app is not None)
+                + f" ORDER BY {order} LIMIT 1"
+            )
             rows = self.client.query(query, job_config=_job_config(parameters)).result()
         except Exception as exc:  # noqa: BLE001 - classified by name; SDK optional at import
             if not _missing_optional_auto_review(exc, ensure=self._ensure):
@@ -2774,7 +2834,7 @@ class BigQueryStore:
         return data
 
     def _find_auto_pass(self, profile_id: str) -> dict:
-        """The one archived pass for ``profile_id`` (buffered or stored), else ValueError."""
+        """The one archived decision for ``profile_id`` (buffered or stored), else ValueError."""
         found: list[dict] = [
             dict(row)
             for row in self._buf["auto_passes"]
@@ -2782,10 +2842,11 @@ class BigQueryStore:
         ]
         try:
             rows = self.client.query(
-                "SELECT run_id, app, profile_id, embedding, photo_count, profile_name, "
-                "random_sample "
-                f"FROM `{self._tid('auto_passes')}` WHERE profile_id = @profile_id "
-                "ORDER BY created_at",
+                "SELECT p.run_id, p.app, p.profile_id, p.embedding, p.photo_count, "
+                "p.profile_name, p.random_sample, p.score, p.threshold, "
+                f"{self._archive_decision_sql()} AS decision "
+                f"FROM `{self._tid('auto_passes')}` p WHERE p.profile_id = @profile_id "
+                "ORDER BY p.created_at",
                 job_config=_job_config([("profile_id", "STRING", profile_id)]),
             ).result()
         except Exception as exc:  # noqa: BLE001
@@ -2801,6 +2862,9 @@ class BigQueryStore:
                 "photo_count": int(row["photo_count"]),
                 "profile_name": str(row["profile_name"] or ""),
                 "random_sample": row["random_sample"],
+                "decision": row["decision"],
+                "score": float(row["score"]),
+                "threshold": float(row["threshold"]),
             }
             for row in rows
         )
@@ -2871,9 +2935,12 @@ class BigQueryStore:
         return None if row is None else bool(row["liked"])
 
     def record_auto_pass_review(self, *, profile_id, would_like) -> dict:
-        """Record the owner's answer to one archived pass: a training label AND a review row.
+        """Record the owner's answer to one archived decision: a training label AND a review.
 
-        ValueError for an unknown, ambiguous or already-reviewed pass (an answer is final).
+        ``would_like`` is the owner's own Like (True) / Dislike (False), for an archived pass
+        or an archived like alike; the label source follows the row's pool
+        (``auto_review_random`` / ``auto_review_near_cut`` / ``auto_review_like``).
+        ValueError for an unknown, ambiguous or already-reviewed row (an answer is final).
         Ordering is the crash-safety argument, since BigQuery has no multi-table transaction:
         the LABEL is flushed first, the review row second. A failure between them leaves a
         label with no review -- never a review with no label -- and the retry finds that label
@@ -2891,13 +2958,19 @@ class BigQueryStore:
             if self._auto_pass_reviewed(app, profile_id):
                 raise ValueError(f"auto pass {profile_id!r} was already reviewed")
             random_sample = pass_row["random_sample"]
-            if type(random_sample) is not bool:
+            decision = stored_archive_decision(pass_row.get("decision"), profile_id)
+            if decision == AUTO_DECISION_LIKE:
+                kind = AUTO_REVIEW_KIND_LIKES
+            elif type(random_sample) is not bool:
                 raise ValueError(
                     f"archived auto pass {profile_id!r} has no valid random_sample flag"
                 )
-            kind = (
-                AUTO_REVIEW_KIND_RANDOM if random_sample else AUTO_REVIEW_KIND_NEAR_CUT
-            )
+            else:
+                kind = (
+                    AUTO_REVIEW_KIND_RANDOM
+                    if random_sample
+                    else AUTO_REVIEW_KIND_NEAR_CUT
+                )
             source = auto_review_label_source(kind)
             existing = self._existing_review_label(pass_row, source)
             if existing is None:
@@ -2947,7 +3020,14 @@ class BigQueryStore:
                     f"BigQuery store: the review row for auto pass {profile_id} is queued "
                     f"but not yet written ({exc}); it will be re-sent on the next flush."
                 )
-        return {"kind": kind, "label_source": source}
+        return {
+            "kind": kind,
+            "label_source": source,
+            "decision": decision,
+            "score": float(pass_row["score"]),
+            "threshold": float(pass_row["threshold"]),
+            "would_like": recorded,
+        }
 
     def _dml(self, sql: str, parameters: list[tuple[str, str, object]]) -> int:
         """Run one bound DML statement and return the rows it affected (raises if unknown)."""
@@ -2962,9 +3042,9 @@ class BigQueryStore:
         return int(affected)
 
     def undo_latest_auto_review(self) -> dict | None:
-        """Undo the newest answer to an archived pass: delete its review row AND its label.
+        """Undo the newest answer to an archived pass or like: delete its review row AND label.
 
-        The pass goes back to the unreviewed pool and can be answered again.  Returns the
+        The row goes back to its unreviewed pool and can be answered again.  Returns the
         undone answer (``profile_id``, ``profile_name``, ``kind``, ``would_like``), or ``None``
         when there is no answer to undo.
 
@@ -3065,13 +3145,14 @@ class BigQueryStore:
         }
 
     def prune_auto_passes(self, *, max_passes=None, max_age_days=None, now=None) -> int:
-        """Delete archived passes (manifest, photo rows AND the GCS objects) beyond retention.
+        """Delete archived AUTO decisions (manifest, photo rows AND GCS objects) past retention.
 
-        A pass goes when it is older than ``max_age_days`` or not among the ``max_passes``
-        newest, answered or not; ``None``/0 leaves that bound off.  Returns how many passes
-        were removed.  The owner's ANSWERS are untouched (labels, review rows, decisions).
+        The bounds cover every archived row, likes and passes together: a row goes when it is
+        older than ``max_age_days`` or not among the ``max_passes`` newest, answered or not;
+        ``None``/0 leaves that bound off.  Returns how many rows were removed.  The owner's
+        ANSWERS are untouched (labels, review rows, decisions).
 
-        Each pass is removed object-first so every step can be repeated: GCS objects, then the
+        Each row is removed object-first so every step can be repeated: GCS objects, then the
         photo rows, then the manifest.  A crash leaves a manifest that the next prune finds
         again; it never leaves objects nothing points at.  Only rows old enough to be out of
         BigQuery's streaming buffer are normally selected; a refusal for that reason is raised
@@ -3143,15 +3224,21 @@ class BigQueryStore:
         ``random_reviewed`` / ``random_would_like`` cover the most recent ``window`` random
         reviews (a rolling estimate that tracks the current model); near-cut counts are
         cumulative. ``auto_likes`` / ``auto_passes`` count AUTO decisions since the first
-        archived pass's own decision and are 0/0 while nothing has been archived;
-        ``auto_model_passes`` is the part of ``auto_passes`` that entered the archive (the rest
-        are likes the session policy or like-ratio ceiling demoted, which the random pool never
-        samples). This process's own
-        buffered passes, reviews and decisions are flushed first (best effort) so the counts
-        include them -- otherwise the first flush_every passes of a run would be invisible to
-        the very estimate they feed. That is one round trip per table with pending rows, which
-        is why callers on the training path reuse the result for a short TTL
-        (ranker/decider.py's LIVE_REVIEW_TTL_S) instead of asking after every label.
+        archived PASS's own decision and are 0/0 while no pass has been archived;
+        ``auto_model_passes`` is the part of ``auto_passes`` that entered the archive as a
+        pass (the rest are likes the session policy or like-ratio ceiling demoted, which the
+        random pool never samples). Archived likes never reach any of those keys.
+
+        ``likes`` is a separate, display-only section over the archived likes:
+        ``{"archived", "reviewed", "agreed"}`` -- like rows still archived, owner answers to
+        archived likes (cumulative), and how many of those answers were Like (agreement).
+        ``live_adjustment`` never reads it.
+
+        This process's own buffered rows, reviews and decisions are flushed first (best
+        effort) so the counts include them -- otherwise the first flush_every passes of a run
+        would be invisible to the very estimate they feed. That is one round trip per table
+        with pending rows, which is why callers on the training path reuse the result for a
+        short TTL (ranker/decider.py's LIVE_REVIEW_TTL_S) instead of asking after every label.
         """
         app = _require_optional_app(app)
         window = _require_window(window)
@@ -3165,73 +3252,6 @@ class BigQueryStore:
         if app is not None:
             parameters.append(("app", "STRING", app))
         reviews = f"`{self._tid('auto_pass_reviews')}`"
-
-        def recent_random(select: str) -> str:
-            return (
-                f"(SELECT {select} FROM (SELECT would_like FROM {reviews} "
-                f"WHERE kind = 'random'{app_clause} "
-                "ORDER BY reviewed_at DESC LIMIT @review_window))"
-            )
-
-        def near_cut(select: str) -> str:
-            return (
-                f"(SELECT {select} FROM {reviews} WHERE kind = 'near_cut'{app_clause})"
-            )
-
-        # The window opens at the DECISION row of the earliest archived pass, not at that
-        # pass's own auto_passes row: the worker records the decision first and archives
-        # afterwards, so counting from auto_passes.created_at would drop the very decision that
-        # started the window and bias pass_share by one pass.  The join is on the pass's lineage
-        # profile_id (exact, no time tolerance); a pass whose decision row is missing falls back
-        # to its own timestamp.  With no archived pass the MIN is NULL, so the count is 0.
-        passes = f"`{self._tid('auto_passes')}`"
-        window_start = (
-            "(SELECT MIN(ts) FROM ("
-            f"SELECT created_at AS ts FROM {passes} WHERE TRUE{app_clause} "
-            "UNION ALL "
-            "SELECT d.created_at AS ts "
-            f"FROM `{self._tid('decisions')}` d JOIN {passes} p "
-            "ON p.app = d.app AND p.profile_id = d.profile_id "
-            "WHERE d.source = 'auto' AND d.decision = 'dislike'"
-            f"{app_clause.replace('app =', 'd.app =')}))"
-        )
-
-        def decisions(decision: str) -> str:
-            return (
-                f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` "
-                f"WHERE source = 'auto' AND decision = '{decision}'{app_clause} "
-                f"AND created_at >= {window_start})"
-            )
-
-        def model_passes() -> str:
-            # AUTO passes that actually entered the archive, matched by the pass's lineage
-            # profile_id (exact, like the window start above).  EXISTS, not a join: BigQuery
-            # streaming dedup is best effort, and a duplicated archive row must not count a
-            # decision twice (that would push this above auto_passes, which the live-review
-            # parser rejects as a store fault).
-            return (
-                f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` d "
-                "WHERE d.source = 'auto' AND d.decision = 'dislike' "
-                f"AND EXISTS (SELECT 1 FROM {passes} p "
-                "WHERE p.app = d.app AND p.profile_id = d.profile_id)"
-                f"{app_clause.replace('app =', 'd.app =')} "
-                f"AND d.created_at >= {window_start})"
-            )
-
-        query = (
-            "SELECT "
-            f"(SELECT COUNT(*) {self._auto_pass_pool_sql(random=True, app=app is not None)}) "
-            "AS pending_random, "
-            f"(SELECT COUNT(*) {self._auto_pass_pool_sql(random=False, app=app is not None)}) "
-            "AS pending_near_cut, "
-            f"{recent_random('COUNT(*)')} AS random_reviewed, "
-            f"{recent_random('COUNTIF(would_like)')} AS random_would_like, "
-            f"{near_cut('COUNT(*)')} AS near_cut_reviewed, "
-            f"{near_cut('COUNTIF(would_like)')} AS near_cut_would_like, "
-            f"{decisions('like')} AS auto_likes, "
-            f"{decisions('dislike')} AS auto_passes, "
-            f"{model_passes()} AS auto_model_passes"
-        )
         names = (
             "pending_random",
             "pending_near_cut",
@@ -3243,16 +3263,143 @@ class BigQueryStore:
             "auto_passes",
             "auto_model_passes",
         )
+        like_names = ("likes_archived", "likes_reviewed", "likes_agreed")
+
+        def result(row) -> dict:
+            out = {
+                name: int((row[name] if row is not None else 0) or 0) for name in names
+            }
+            out["likes"] = {
+                key: int((row[f"likes_{key}"] if row is not None else 0) or 0)
+                for key in ("archived", "reviewed", "agreed")
+            }
+            return out
+
+        def recent_random(select: str) -> str:
+            return (
+                f"(SELECT {select} FROM (SELECT would_like FROM {reviews} "
+                f"WHERE kind = '{AUTO_REVIEW_KIND_RANDOM}'{app_clause} "
+                "ORDER BY reviewed_at DESC LIMIT @review_window))"
+            )
+
+        def reviewed(kind: str, select: str) -> str:
+            return f"(SELECT {select} FROM {reviews} WHERE kind = '{kind}'{app_clause})"
+
         try:
+            passes = f"`{self._tid('auto_passes')}`"
+            decision = self._archive_decision_sql()
+            is_pass = f"{decision} = '{AUTO_DECISION_DISLIKE}'"
+            is_like = f"{decision} = '{AUTO_DECISION_LIKE}'"
+            p_app = app_clause.replace("app =", "p.app =")
+            d_app = app_clause.replace("app =", "d.app =")
+            # The window opens at the DECISION row of the earliest archived pass, not at that
+            # pass's own auto_passes row: the worker records the decision first and archives
+            # afterwards, so counting from auto_passes.created_at would drop the very decision
+            # that started the window and bias pass_share by one pass.  The join is on the
+            # pass's lineage profile_id (exact, no time tolerance); a pass whose decision row is
+            # missing falls back to its own timestamp.  Archived LIKES never open it.  With no
+            # archived pass the MIN is NULL, so the count is 0.
+            window_start = (
+                "(SELECT MIN(ts) FROM ("
+                f"SELECT p.created_at AS ts FROM {passes} p WHERE {is_pass}{p_app} "
+                "UNION ALL "
+                "SELECT d.created_at AS ts "
+                f"FROM `{self._tid('decisions')}` d JOIN {passes} p "
+                "ON p.app = d.app AND p.profile_id = d.profile_id "
+                f"WHERE d.source = 'auto' AND d.decision = 'dislike' AND {is_pass}"
+                f"{d_app}))"
+            )
+
+            def decisions(decision: str) -> str:
+                return (
+                    f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` "
+                    f"WHERE source = 'auto' AND decision = '{decision}'{app_clause} "
+                    f"AND created_at >= {window_start})"
+                )
+
+            def model_passes() -> str:
+                # AUTO passes that actually entered the archive as passes, matched by the
+                # pass's lineage profile_id (exact, like the window start above).  EXISTS, not
+                # a join: BigQuery streaming dedup is best effort, and a duplicated archive row
+                # must not count a decision twice (that would push this above auto_passes,
+                # which the live-review parser rejects as a store fault).
+                return (
+                    f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` d "
+                    "WHERE d.source = 'auto' AND d.decision = 'dislike' "
+                    f"AND EXISTS (SELECT 1 FROM {passes} p "
+                    f"WHERE p.app = d.app AND p.profile_id = d.profile_id AND {is_pass})"
+                    f"{d_app} "
+                    f"AND d.created_at >= {window_start})"
+                )
+
+            def pending(kind: str) -> str:
+                pool = self._auto_pass_pool_sql(
+                    kind=kind, app=app is not None, decision=decision
+                )
+                return f"(SELECT COUNT(*) {pool})"
+
+            query = (
+                "SELECT "
+                f"{pending(AUTO_REVIEW_KIND_RANDOM)} AS pending_random, "
+                f"{pending(AUTO_REVIEW_KIND_NEAR_CUT)} AS pending_near_cut, "
+                f"{recent_random('COUNT(*)')} AS random_reviewed, "
+                f"{recent_random('COUNTIF(would_like)')} AS random_would_like, "
+                f"{reviewed(AUTO_REVIEW_KIND_NEAR_CUT, 'COUNT(*)')} AS near_cut_reviewed, "
+                f"{reviewed(AUTO_REVIEW_KIND_NEAR_CUT, 'COUNTIF(would_like)')} "
+                "AS near_cut_would_like, "
+                f"{decisions('like')} AS auto_likes, "
+                f"{decisions('dislike')} AS auto_passes, "
+                f"{model_passes()} AS auto_model_passes, "
+                f"(SELECT COUNT(*) FROM {passes} p WHERE {is_like}{p_app}) "
+                f"AS {like_names[0]}, "
+                f"{reviewed(AUTO_REVIEW_KIND_LIKES, 'COUNT(*)')} AS {like_names[1]}, "
+                f"{reviewed(AUTO_REVIEW_KIND_LIKES, 'COUNTIF(would_like)')} "
+                f"AS {like_names[2]}"
+            )
             rows = self.client.query(query, job_config=_job_config(parameters)).result()
         except Exception as exc:  # noqa: BLE001
             if not _missing_optional_auto_review(exc, ensure=self._ensure):
                 raise
-            return dict.fromkeys(names, 0)
-        row = next(iter(rows), None)
-        if row is None:
-            return dict.fromkeys(names, 0)
-        return {name: int(row[name] or 0) for name in names}
+            return result(None)
+        return result(next(iter(rows), None))
+
+    def auto_review_waiting(self, *, app=None) -> dict:
+        """Unreviewed, fully archived rows per pool, for the hub's "N waiting" count.
+
+        ``{"likes", "random", "near_cut", "total"}`` (ints): exactly the rows
+        ``next_auto_pass_for_review`` can still offer (same pool SQL), so the count and the
+        card agree. This process's buffered archive and reviews are flushed first (best
+        effort); a read-only store with no tables yet reads all zeros.
+        """
+        app = _require_optional_app(app)
+        self._flush_auto_review_buffers()
+        kinds = (
+            AUTO_REVIEW_KIND_LIKES,
+            AUTO_REVIEW_KIND_RANDOM,
+            AUTO_REVIEW_KIND_NEAR_CUT,
+        )
+        parameters = [] if app is None else [("app", "STRING", app)]
+        try:
+            decision = self._archive_decision_sql()
+            query = "SELECT " + ", ".join(
+                "(SELECT COUNT(*) "
+                + self._auto_pass_pool_sql(
+                    kind=kind, app=app is not None, decision=decision
+                )
+                + f") AS waiting_{kind}"
+                for kind in kinds
+            )
+            rows = self.client.query(query, job_config=_job_config(parameters)).result()
+            row = next(iter(rows), None)
+        except Exception as exc:  # noqa: BLE001
+            if not _missing_optional_auto_review(exc, ensure=self._ensure):
+                raise
+            row = None
+        waiting = {
+            kind: int((row[f"waiting_{kind}"] if row is not None else 0) or 0)
+            for kind in kinds
+        }
+        return {**waiting, "total": sum(waiting.values())}
 
     def record_spend(self, run_id, model, usage: Usage, cost):
         # cost is None when the call's price couldn't be determined (e.g. no

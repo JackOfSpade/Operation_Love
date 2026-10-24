@@ -83,6 +83,10 @@ Only when the bottom edge is unknown is a 152px square centred on each heart `se
 found in the card painted instead; the two builds' heart centres differ by a pixel, so such a
 card's pixels can differ between builds by that pixel, and a button no template matched (one cut
 by the content band's edge) stays in.
+`extract_photo_cards(frames, paint_like_button=False)` is for DISPLAY only (the hub's review
+card shows the owner the photos as they looked): every card is still measured, classified and
+merged on the painted canvas, so it returns exactly the default call's cards, with the button
+left in their pixels. Nothing embedded or stored may come from it.
 
 PHOTO OR TEXT (no model)
 ------------------------
@@ -237,7 +241,8 @@ class PhotoCard:
     `pixels` is an (height, 974, 3) uint8 RGB array of the photo media only (caption strip and
     page chrome excluded), read-only. `height` is its row count; a complete card is 974.
     `button_boxes` are the (row0, row1, col0, col1) half-open card-pixel boxes painted with
-    `CLIP_MEAN_RGB` over the like button (empty when no button position was known).
+    `CLIP_MEAN_RGB` over the like button (empty when no button position was known; with
+    `paint_like_button=False` they are where it was painted for measuring, not in `pixels`).
     `stitched` means rows came from more than one frame (always pixel-exact: frames are aligned
     by exact scroll shifts); `video_like` means the card's instances disagreed like an
     autoplaying video, in which case it is never stitched. `x_overlay_rows` counts rows that
@@ -643,6 +648,8 @@ class _Card:
     keep: Any = None
     buttons: tuple[tuple[int, int, int, int], ...] = ()
     band: str | None = None  # BAND_* verdict when 0.5 <= white < 0.8
+    # the canvas before the button was painted; kept only for paint_like_button=False
+    unpainted: Any = None
 
 
 def _find(parent: list[int], x: int) -> int:
@@ -827,12 +834,16 @@ def _segment_all(frames):
     return chosen, segs
 
 
-def extract_photo_cards(frames: Sequence[bytes]) -> PhotoCards:
+def extract_photo_cards(
+    frames: Sequence[bytes], *, paint_like_button: bool = True
+) -> PhotoCards:
     """The profile's unique photo cards, in order of first appearance. See the module docstring.
 
     `frames` are the profile's full-screen screencaps in scroll order (`Profile.photos`), ALL of
     them: no quality filter, nothing reordered. Pure and deterministic; raises
-    `PhotoCardsError` when the frames cannot be read, never returns a partial answer."""
+    `PhotoCardsError` when the frames cannot be read, never returns a partial answer.
+    `paint_like_button=False` returns the same cards with the like button left in their pixels,
+    for display only (module docstring "The like button")."""
     for index, frame in enumerate(frames):
         if not isinstance(frame, (bytes, bytearray, memoryview)):
             raise PhotoCardsError(f"frame {index} is {type(frame).__name__}, not bytes")
@@ -906,7 +917,14 @@ def extract_photo_cards(frames: Sequence[bytes]) -> PhotoCards:
     cards: list[_Card] = []
     for members in groups.values():
         card = _reconstruct(
-            [inst[i] for i in members], rgbs, offset, x0, x1, len(cards), np
+            [inst[i] for i in members],
+            rgbs,
+            offset,
+            x0,
+            x1,
+            len(cards),
+            np,
+            keep_unpainted=not paint_like_button,
         )
         if card is not None:
             cards.append(card)
@@ -928,7 +946,7 @@ def extract_photo_cards(frames: Sequence[bytes]) -> PhotoCards:
 
     out = []
     for order, c in enumerate(kept):
-        pixels = np.ascontiguousarray(c.canvas)
+        pixels = np.ascontiguousarray(c.canvas if c.unpainted is None else c.unpainted)
         pixels.setflags(write=False)
         out.append(
             PhotoCard(
@@ -965,8 +983,11 @@ def extract_photo_cards(frames: Sequence[bytes]) -> PhotoCards:
     )
 
 
-def _reconstruct(group, rgbs, offset, x0, x1, serial, np) -> _Card | None:
-    """One card's photo region from its instances, or None when too little of it was seen."""
+def _reconstruct(
+    group, rgbs, offset, x0, x1, serial, np, keep_unpainted: bool = False
+) -> _Card | None:
+    """One card's photo region from its instances, or None when too little of it was seen.
+    `keep_unpainted` also keeps a copy of the canvas from before the like button is painted."""
     comp = group[0].component
     tops = [x.p0 for x in group if x.top_observed]
     bots = [x.p1 for x in group if x.bottom_observed]
@@ -1058,6 +1079,7 @@ def _reconstruct(group, rgbs, offset, x0, x1, serial, np) -> _Card | None:
         {(hx - x0, hy + offset[x.frame] - r0) for x in group for hx, hy in x.hearts}
     )
     buttons = _button_boxes(height, x1 - x0, r0, media_bottom, hearts)
+    unpainted = canvas.copy() if keep_unpainted else None
     keep = None
     if buttons:
         keep = np.ones(canvas.shape[:2], bool)
@@ -1113,6 +1135,7 @@ def _reconstruct(group, rgbs, offset, x0, x1, serial, np) -> _Card | None:
         keep=keep,
         buttons=buttons,
         band=band,
+        unpainted=unpainted,
     )
 
 

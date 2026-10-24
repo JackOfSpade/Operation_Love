@@ -452,23 +452,27 @@ ranker:
   # likes 36.0 -> 33.9 per 100, recall 0.914 -> 0.912). face_crop_v1 switches back; no label changes.
   feature_set: face_crop_whole_photo_v1
 
-# --- Auto pass review ---
-# AUTO archives every profile it PASSES (screenshots + score + embedding). The hub's "Review auto
-# passes" card shows them back: tap "Would have liked" or "Correct pass". EVERY answer becomes a
-# training label (an untapped pass is never assumed correct). Answers on the random pool measure the
-# live false-pass rate; if it is significantly above what the out-of-fold scores predicted, the
-# effective recall target rises automatically.
+# --- Auto review ---
+# AUTO archives every profile the MODEL passes and every model like that landed (screenshots + score +
+# embedding). The hub's review card shows them back as their photo cards: tap "Like" or "Dislike" (your
+# own judgment; the bot's decision is shown only after you answer). EVERY answer becomes a train-only
+# label (an untapped profile is never assumed correct). AUTO never stops for reviews: they accumulate
+# and the card shows how many are waiting. Answers on the random PASS pool alone measure the live
+# false-pass rate; if it is significantly above what the out-of-fold scores predicted, the effective
+# recall target rises automatically.
 auto_review:
   enabled: true
   random_share: 0.5            # share of archived passes sent to the unbiased random pool; the rest are
-                               # reviewed near the cutoff (strictly between 0 and 1)
-  # Retention. The archive holds real strangers' screenshots (~2.4 MB per pass), so it is bounded from
-  # the first pass: a pass older than max_age_days, or beyond the newest max_archived_passes, loses its
-  # screenshots, embedding and manifest (oldest first; on BigQuery the Cloud Storage objects too). Your
-  # ANSWERS (training labels and review rows) are never touched. 0 = unlimited for that bound. Applied
-  # at the start of every AUTO run and after every few archived passes -- also when `enabled` is false.
-  max_archived_passes: 400
-  max_age_days: 30
+                               # reviewed near the cutoff (strictly between 0 and 1). Likes have their own pool.
+  # Retention. The archive holds real strangers' screenshots (~2.4 MB per profile; 1500 is ~3.6 GB), so
+  # it is bounded from the first archived profile. The bounds cover EVERY archived AUTO decision, likes
+  # and passes alike: one older than max_age_days, or beyond the newest max_archived_passes, loses its
+  # screenshots, embedding and manifest (oldest first; on BigQuery the Cloud Storage objects too), answered
+  # or not. Your ANSWERS (training labels and review rows) are never touched. 0 = unlimited for that
+  # bound. Applied at the start of every AUTO run and after every few archived profiles -- also when
+  # `enabled` is false. Sized so reviews can wait until you get to them.
+  max_archived_passes: 1500
+  max_age_days: 60
 
 quality_filter:
   enabled: true

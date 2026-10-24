@@ -1028,6 +1028,26 @@ def _settled_read_scroll_frame(driver: HingeDriver) -> bytes:
     )
 
 
+def _adjusted_navigation_anchor(
+    driver: HingeDriver, *, before: bytes, page_offset: int
+) -> tuple[bytes, int]:
+    """Account for one deliberate pre-heart adjustment before navigating again.
+
+    Only the displacement of the gesture just issued is measured here. An unrelated large
+    entry drift still goes through the navigator's unchanged refusal. The next navigation
+    re-proves identity, the same absolute heart ordinal, and the complete target crop from
+    this measured anchor; no target is re-identified or translated by a requested distance.
+    """
+    following = _settled_read_scroll_frame(driver)
+    measured = driver._measured_page_shift(before, following)
+    if type(measured) is not int:
+        raise _CaptureAbort(
+            "pre-heart adjustment displacement could not be measured; refusing to navigate "
+            "from an unaccounted page position"
+        )
+    return following, page_offset + measured
+
+
 @dataclass(frozen=True)
 class _TargetFrameProof:
     """What one exact-frame target screen actually established, carried to whoever claims it.
@@ -4467,6 +4487,12 @@ def _capture_one_profile_unattended(
             "to reuse a profile across the evidence split"
         )
 
+    # Preserve the original index/ordinals. Only a successfully navigated landing plus the
+    # measured displacement of our own adjustments may move the next navigation's zero point.
+    # This is the same anchor/rebase pattern the production progressive dwell sweep uses.
+    original_reference_offset = index.offsets[-1]
+    navigation_frame = card_frames[-1]
+    navigation_page_offset = original_reference_offset
     action_trace: list[dict] = []
     for item_number in target_items:
         blocker_proof = _verified_blocker_absence(payload, item_number)
@@ -4487,17 +4513,18 @@ def _capture_one_profile_unattended(
             item_number: int,
             adjustment_count: int,
             center_offsets_tried: list[float],
-        ) -> int:
+            page_offset: int,
+        ) -> tuple[int, bytes, int]:
             """One bounded corrective read-scroll, charged against the shared adjustment
             budget, or the bounded pre-action skip once that budget is exhausted.  Returns the
-            incremented adjustment count; the caller stores it back.
+            incremented adjustment count and measured navigation anchor.
 
             Shared by both centring checks in the loop below -- the one taken right after
             navigation parks the card, and the one re-run after a still-photo probe's return
             leg leaves a measured page residual -- so a card corrected from either position is
             corrected exactly the same way, against exactly the same budget.  `target_pre`,
-            `item_number`, `adjustment_count` and `center_offsets_tried` are explicit parameters
-            rather than closed over: all four are reassigned somewhere in the loops this is
+            `item_number`, `adjustment_count`, `center_offsets_tried` and `page_offset` are
+            explicit parameters rather than closed over: all five can change in the loops this is
             called from, and closing over a name a loop reassigns is exactly the late-binding
             trap ruff's B023 exists to catch.
             """
@@ -4536,19 +4563,28 @@ def _capture_one_profile_unattended(
                 driver._scroll_up_one(step.frac, step.x_frac)
             else:
                 driver._scroll_down_one(step.frac, step.x_frac)
-            # Never reuse a target point across a visual adjustment; re-navigate instead.
-            driver.adb.screencap()
-            return adjustment_count
+            # Re-navigate from the measured landing, with the original index/ordinal intact.
+            frame, offset = _adjusted_navigation_anchor(
+                driver, before=target_pre, page_offset=page_offset
+            )
+            return adjustment_count, frame, offset
 
         while True:
             try:
+                walk_index = hinge_mod.HingeDriver._rebase_item_index_for_anchor(
+                    index, navigation_page_offset - original_reference_offset
+                )
+                if walk_index is None:
+                    raise _CaptureAbort(
+                        "pre-heart navigation index cannot be rebased to its measured anchor"
+                    )
                 heart_ordinal = payload.item(item_number).heart_ordinal
-                navigation_index = index.translation.index(heart_ordinal) + 1
+                navigation_index = walk_index.translation.index(heart_ordinal) + 1
                 target = navigate_to_item(
                     driver,
-                    index,
+                    walk_index,
                     navigation_index,
-                    entry_reference=card_frames[-1],
+                    entry_reference=navigation_frame,
                     identity_match_max_dist=_UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST,
                 )
             except (
@@ -4559,8 +4595,8 @@ def _capture_one_profile_unattended(
                 SegmentationError,
                 ScrollStepError,
             ) as exc:
-                # A navigation entry refusal is decided from two exact frames: the last indexed
-                # read position and the navigator's fresh entry capture.  Persist both privately
+                # A navigation entry refusal is decided from two exact frames: its current
+                # measured reference and the navigator's fresh entry capture. Persist both privately
                 # before the skip rewinds/advances the phone; without the pair, a real -500px
                 # anchor can never be distinguished offline from a false shift caused by moving
                 # media.  These are forensic diagnostics only and are never listed in the
@@ -4581,7 +4617,7 @@ def _capture_one_profile_unattended(
                         forensics_dir = ensure_private_dir(out_dir / "forensics")
                         atomic_write_private_bytes(
                             forensics_dir / f"{stem}_read_reference.png",
-                            card_frames[-1],
+                            navigation_frame,
                             parent=forensics_dir,
                         )
                         atomic_write_private_bytes(
@@ -4599,7 +4635,7 @@ def _capture_one_profile_unattended(
                                     "item_number": item_number,
                                     "error_code": exc.code,
                                     "error": str(exc),
-                                    "read_reference_sha256": _sha256(card_frames[-1]),
+                                    "read_reference_sha256": _sha256(navigation_frame),
                                     "entry_sha256": _sha256(exc.frame),
                                     "anchor_delta_px": getattr(
                                         anchor, "delta_px", None
@@ -4651,7 +4687,8 @@ def _capture_one_profile_unattended(
                     f"item {item_number}: {type(exc).__name__}: {exc}",
                 )
                 raise skip_before_heart(retry, identity) from exc
-            target_pre = target.frame
+            navigation_frame = target_pre = target.frame
+            navigation_page_offset = target.page_offset
             # Default to the navigator's own point/rows.  Both are overwritten below only when
             # the still-photo probe's return leg leaves a measured page residual; passing them
             # through unconditionally from here on keeps the residual == 0 path a no-op.
@@ -4700,12 +4737,15 @@ def _capture_one_profile_unattended(
                 center_offset is not None
                 and abs(center_offset) > STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
             ):
-                adjustment_count = _apply_bounded_centering_correction(
-                    center_offset,
-                    target_pre=target_pre,
-                    item_number=item_number,
-                    adjustment_count=adjustment_count,
-                    center_offsets_tried=center_offsets_tried,
+                adjustment_count, navigation_frame, navigation_page_offset = (
+                    _apply_bounded_centering_correction(
+                        center_offset,
+                        target_pre=target_pre,
+                        item_number=item_number,
+                        adjustment_count=adjustment_count,
+                        center_offsets_tried=center_offsets_tried,
+                        page_offset=navigation_page_offset,
+                    )
                 )
                 continue
             try:
@@ -4723,6 +4763,12 @@ def _capture_one_profile_unattended(
                     "target_verification_blocked", f"item {item_number}: {exc}"
                 )
                 raise skip_before_heart(retry, identity) from exc
+            # A reviewer RETRY or SCROLL may re-enter navigation after this probe moved the
+            # page. Keep its measured return frame/offset even when only chrome bytes changed.
+            navigation_frame = still_photo_proof.action_frame
+            navigation_page_offset = (
+                target.page_offset + still_photo_proof.page_residual_px
+            )
             if still_photo_proof.action_frame != target_pre:
                 # THE GATE IS THE BYTES CHANGING, NOT THE RESIDUAL.  `action_frame` can differ
                 # from `target_pre` with a MEASURED residual of exactly 0: Android's status-bar
@@ -4776,12 +4822,15 @@ def _capture_one_profile_unattended(
                     center_offset is not None
                     and abs(center_offset) > STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
                 ):
-                    adjustment_count = _apply_bounded_centering_correction(
-                        center_offset,
-                        target_pre=target_pre,
-                        item_number=item_number,
-                        adjustment_count=adjustment_count,
-                        center_offsets_tried=center_offsets_tried,
+                    adjustment_count, navigation_frame, navigation_page_offset = (
+                        _apply_bounded_centering_correction(
+                            center_offset,
+                            target_pre=target_pre,
+                            item_number=item_number,
+                            adjustment_count=adjustment_count,
+                            center_offsets_tried=center_offsets_tried,
+                            page_offset=navigation_page_offset,
+                        )
                     )
                     continue
             if review_gate is None:
@@ -4841,6 +4890,12 @@ def _capture_one_profile_unattended(
                 adjustment_count += 1
             elif review_before["decision"] in {"scroll_up", "scroll_down"}:
                 adjustment_count += 1
+            if adjustment_count > _HYBRID_MAX_ADJUSTMENTS_PER_ACTION:
+                raise _CaptureAbort(
+                    "reviewer exceeded the bounded hybrid adjustment budget for one "
+                    "heart; abort and modify/relaunch rather than continue blind"
+                )
+            if review_before["decision"] in {"scroll_up", "scroll_down"}:
                 try:
                     step, _ = _plan_card_scroll(
                         target_pre,
@@ -4857,12 +4912,8 @@ def _capture_one_profile_unattended(
                     driver._scroll_up_one(step.frac, step.x_frac)
                 else:
                     driver._scroll_down_one(step.frac, step.x_frac)
-                # Never reuse a target point after a reviewer-directed visual adjustment.
-                driver.adb.screencap()
-            if adjustment_count > _HYBRID_MAX_ADJUSTMENTS_PER_ACTION:
-                raise _CaptureAbort(
-                    "reviewer exceeded the bounded hybrid adjustment budget for one "
-                    "heart; abort and modify/relaunch rather than continue blind"
+                navigation_frame, navigation_page_offset = _adjusted_navigation_anchor(
+                    driver, before=target_pre, page_offset=navigation_page_offset
                 )
         # External review authorizes one exact frame and point, not a coordinate that remains
         # valid indefinitely. Re-capture and re-run the structural/identity gates immediately
@@ -5117,6 +5168,22 @@ def _capture_one_profile_unattended(
                 pass_adjustments += 1
             elif pass_review["decision"] in {"scroll_up", "scroll_down"}:
                 pass_adjustments += 1
+            else:
+                recovery = recover_unsent_composer(
+                    frame=pass_frame,
+                    item_number=pass_item_number,
+                    failure_stage="pre_pass_reviewer_nonapproval",
+                )
+                raise _CaptureAbort(
+                    "reviewer requested profile restart after hearting; session must "
+                    "abort rather than disguise prior real actions; abort cleanup "
+                    f"outcome={recovery['outcome']}"
+                )
+            if pass_adjustments > _HYBRID_MAX_ADJUSTMENTS_PER_ACTION:
+                raise _CaptureAbort(
+                    "reviewer exceeded bounded hybrid adjustment budget before Pass"
+                )
+            if pass_review["decision"] in {"scroll_up", "scroll_down"}:
                 try:
                     step, _ = _plan_card_scroll(
                         pass_frame,
@@ -5140,21 +5207,6 @@ def _capture_one_profile_unattended(
                     confirm_template=confirm_template,
                     payload=payload,
                     item_number=pass_item_number,
-                )
-            else:
-                recovery = recover_unsent_composer(
-                    frame=pass_frame,
-                    item_number=pass_item_number,
-                    failure_stage="pre_pass_reviewer_nonapproval",
-                )
-                raise _CaptureAbort(
-                    "reviewer requested profile restart after hearting; session must "
-                    "abort rather than disguise prior real actions; abort cleanup "
-                    f"outcome={recovery['outcome']}"
-                )
-            if pass_adjustments > _HYBRID_MAX_ADJUSTMENTS_PER_ACTION:
-                raise _CaptureAbort(
-                    "reviewer exceeded bounded hybrid adjustment budget before Pass"
                 )
     try:
         if send_like:

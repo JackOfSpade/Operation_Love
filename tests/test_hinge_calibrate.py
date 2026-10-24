@@ -1339,10 +1339,13 @@ def _unattended_single_item_fixtures(monkeypatch, *, extra_screencaps: int = 0):
     identity = ProfileIdentity(
         (1,), _IDENTITY_BAND, (64, 16), 0, 20.0, "known", agreeing_frames=2
     )
-    index = SimpleNamespace(usable=True, translation=(1,), complete=False)
+    index = SimpleNamespace(usable=True, translation=(1,), complete=False, offsets=(0,))
     payload = SimpleNamespace(item=lambda _n: SimpleNamespace(heart_ordinal=1))
     target = SimpleNamespace(
-        frame=b"target-pre", point=(500, 800), block_frame_rows=(700, 900)
+        frame=b"target-pre",
+        point=(500, 800),
+        block_frame_rows=(700, 900),
+        page_offset=0,
     )
 
     class _Adb:
@@ -1387,6 +1390,9 @@ def _unattended_single_item_fixtures(monkeypatch, *, extra_screencaps: int = 0):
         def _scroll_up_one(self, frac, x_frac):
             self.scrolls.append(("up", frac, x_frac))
 
+        def _measured_page_shift(self, before, after):
+            return 0
+
     driver = _Driver()
     pass_calls: list = []
     send_calls: list = []
@@ -1419,6 +1425,9 @@ def _unattended_single_item_fixtures(monkeypatch, *, extra_screencaps: int = 0):
 
     monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_a: None))
     monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(
+        cal, "_settled_read_scroll_frame", lambda drv: drv.adb.screencap()
+    )
     monkeypatch.setattr(
         cal, "_rewind_automated_profile_to_confirmed_top", lambda *_a, **_kw: b"top"
     )
@@ -2558,7 +2567,9 @@ _PARK_IN_ZONE_ROWS = (900, 1100)  # centre 1000 ->  0.000, dead centre
 
 def _parked_target(rows):
     """What `navigate_to_item` hands back after parking the card at `rows` on the action frame."""
-    return SimpleNamespace(frame=b"target-pre", point=(500, 800), block_frame_rows=rows)
+    return SimpleNamespace(
+        frame=b"target-pre", point=(500, 800), block_frame_rows=rows, page_offset=0
+    )
 
 
 def _park_bound_proof(_driver, target, **_kw):

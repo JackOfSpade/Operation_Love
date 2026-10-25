@@ -9310,3 +9310,24 @@ def test_debug_log_surfaces_returned_chain_whose_leg_sum_disagrees_with_direct(
     assert "leg sum +0px vs direct entry-frame check -35px (35px apart)" in rows[0]
     assert "row predates anchor_shift_px" in rows[0]
     assert "anchor took +12px" in rows[1]
+
+
+def test_return_refusal_highlights_measured_motion_against_requested_direction():
+    record = {
+        "action": "still_photo_dwell_return_chain",
+        "outcome": "refused",
+        "reason": "return_leg_no_progress",
+        "legs": [
+            None,
+            {"attempt": 15, "direction": "forward", "measured_shift_px": 407},
+            {"attempt": 16, "direction": "forward", "measured_shift_px": -538},
+            {"attempt": 17, "direction": "reverse", "measured_shift_px": 25},
+            {"attempt": 18, "direction": "forward", "measured_shift_px": True},
+        ],
+    }
+    md = bugreport._dwell_return_chain_refusal_summary_md([json.dumps(record)])
+    assert "leg 16 measured -538px against its requested forward direction" in md
+    assert "leg 17 measured +25px against its requested reverse direction" in md
+    assert "leg 15 measured" not in md
+    assert "leg 18 measured" not in md
+    assert "reversal or repeated-card alias" in md

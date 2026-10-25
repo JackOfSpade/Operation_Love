@@ -3421,6 +3421,23 @@ def _dwell_return_chain_refusal_summary_md(lines: list[str]) -> str:
             details.append(f"return gate <{bound:g}px")
         if direct is not None:
             details.append(f"direct entry-frame check {direct:+g}px")
+        legs = rec.get("legs")
+        if isinstance(legs, list):
+            for leg in legs:
+                if not isinstance(leg, dict):
+                    continue
+                shift = number(leg.get("measured_shift_px"))
+                direction = leg.get("direction")
+                if shift is not None and (
+                    (direction == "forward" and shift < 0)
+                    or (direction == "reverse" and shift > 0)
+                ):
+                    attempt = number(leg.get("attempt"))
+                    label = f"leg {attempt:g}" if attempt is not None else "a leg"
+                    details.append(
+                        f"{label} measured {shift:+g}px against its requested {direction} direction "
+                        "(inspect its motion evidence for a reversal or repeated-card alias)"
+                    )
         if before:
             details.append(f"evidence before `{_sanitize_inline(before)}`")
         if after:

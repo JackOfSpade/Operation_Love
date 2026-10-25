@@ -134,6 +134,8 @@ from .frameshift import (
     SHIFT_MEASURED,
     SHIFT_NO_CONSENSUS,
     SHIFT_NO_EVIDENCE,
+    STRIP_MATCHED,
+    _AGREEMENT_TOLERANCE_PX,
     ShiftEstimationError,
     estimate_shift,
     estimate_shift_with_reverse_recovery,
@@ -6963,6 +6965,92 @@ class AndroidDriver(DatingAppDriver):
         except Exception as exc:  # noqa: BLE001 -- same rule, for a non-production estimate double
             return {"error": f"{type(exc).__name__}: {exc}"}
 
+    def _pixel_witnessed_video_marker_pair(self, frames, by_frame, result, reverse):
+        """Resolve repeated video controls only with reciprocal exact pixel witnesses.
+
+        Equal-height adjacent videos repeat their mute/edge/heart geometry. A unique
+        in-band control in each frame therefore need not belong to the same card
+        (run 2925a663b9d1). A strip from each direction must name the SAME signed
+        displacement before we search the predicted control origin. The ordinary
+        direct bridge still has to corroborate it with an observed card anchor.
+        """
+        forward_deltas = {
+            s.delta_px
+            for s in result.strips
+            if s.state == STRIP_MATCHED and s.delta_px is not None
+        }
+        reverse_deltas = (
+            {
+                -s.delta_px
+                for s in reverse.strips
+                if s.state == STRIP_MATCHED and s.delta_px is not None
+            }
+            if reverse is not None
+            else set()
+        )
+        template = _video_mute_template()
+        if template is None:
+            return None
+        height = result.frame_size[1]
+        top = self.content_band[0]
+        if self.identity_band is not None and 0 < self.identity_band[3] < top:
+            top = self.identity_band[3]
+        band = (top, self.content_band[1])
+        segs = tuple(
+            segment_frame(
+                frame,
+                content_band=band,
+                like_template=self._template("like"),
+                like_threshold=_LIKE_MATCH_THRESHOLD,
+            )
+            for frame in frames
+        )
+        if any(seg.failures for seg in segs):
+            return None
+        bound = min(result.trust_window_px, _pitch_relative_max_step(segs))
+        pairs = {}
+        for delta in forward_deltas & reverse_deltas:
+            if not 0 < abs(delta) <= bound:
+                continue
+            for i, marker in by_frame.items():
+                j = 1 - i
+                y = marker.y - delta if i == 0 else marker.y + delta
+                if (
+                    not round(top * height)
+                    <= y
+                    <= round(band[1] * height) - template.shape[0]
+                ):
+                    continue
+                ok, score, origin = self._locate_video_mute(
+                    frames[j],
+                    (marker.x, y, marker.x + template.shape[1], y + template.shape[0]),
+                )
+                if (
+                    not ok
+                    or score is None
+                    or score < _VIDEO_MUTE_MATCH_THRESHOLD
+                    or origin != (marker.x, y)
+                ):
+                    continue
+                other = VideoMuteMarker(frame_index=j, x=marker.x, y=y, score=score)
+                pair = {i: marker, j: other}
+                a, b = (0, 1) if delta > 0 else (1, 0)
+                measured = _direct_marker_bridge_delta(
+                    segs[a],
+                    segs[b],
+                    before_marker=pair[a],
+                    after_marker=pair[b],
+                    max_step_px=bound,
+                )
+                if measured == abs(delta):
+                    pairs[(delta, pair[0].x, pair[0].y, pair[1].y)] = pair
+        # Several physical videos may independently prove the same translation;
+        # competing translations remain ambiguous and cannot move the anchor.
+        if len({key[0] for key in pairs}) != 1:
+            return None
+        key, pair = next(iter(pairs.items()))
+        return key[0], pair, band, bound
+
     def _recover_video_marker_page_shift(self, before, after, result, reverse=None):
         """Measure a refused single leg from app-owned video UI and a separate card anchor.
 
@@ -7050,6 +7138,31 @@ class AndroidDriver(DatingAppDriver):
             return result
         if delta is None:
             return result
+        # A mute button and an identically placed heart/edge can alias onto the
+        # next video. Never override static pixels with that repeated geometry.
+        witnesses = {
+            s.delta_px
+            for s in result.strips
+            if s.state == STRIP_MATCHED and s.delta_px is not None
+        } | (
+            {
+                -s.delta_px
+                for s in reverse.strips
+                if s.state == STRIP_MATCHED and s.delta_px is not None
+            }
+            if reverse is not None
+            else set()
+        )
+        if any(abs(w - delta) > _AGREEMENT_TOLERANCE_PX for w in witnesses):
+            try:
+                witnessed = self._pixel_witnessed_video_marker_pair(
+                    (before, after), by_frame, result, reverse
+                )
+            except (SegmentationError, ItemIndexError):
+                witnessed = None
+            if witnessed is None:
+                return result
+            delta, by_frame, marker_band, bound = witnessed
         recovered = dataclasses.replace(
             result,
             delta_px=delta,

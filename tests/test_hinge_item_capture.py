@@ -12561,3 +12561,83 @@ def test_video_navigation_recovers_control_clipped_above_capture_band(
         assert row["extended_above_content_band"] is True
         assert row["marker_content_band"] == [drv.identity_band[3], original_band[1]]
         assert row["delta_px"] == expected
+
+
+@pytest.mark.parametrize("ascending", (False, True))
+@pytest.mark.parametrize(
+    "gate",
+    (None, "no_reverse_witness", "missing_control", "wrong_pixels", "competing_pixels"),
+)
+def test_equal_video_cards_cannot_alias_page_shift(monkeypatch, ascending, gate):
+    """Emily's return: 489px forward must not become -538px onto the next video.
+
+    Both cards have the same control/edge offsets. Reciprocal pixel evidence plus
+    the exact predicted control and real segmentation must resolve the identity.
+    """
+    drv = _drv(WorldAdb())
+    world = _build_world(layout=(("card", 974), ("card", 974)), top_gap=728)
+    template = hinge._video_mute_template()
+    for y in (781, 1808):
+        world[y : y + template.shape[0], 202 : 202 + template.shape[1]] = template
+    frames = []
+    for i, scroll in enumerate((0, 489)):
+        gray = world[scroll : scroll + _H].copy()
+        gray[:226] = _CHROME_TOP[:226]
+        gray[_BAND1:] = _CHROME_BOTTOM
+        if i == 1 and gate in ("missing_control", "wrong_pixels"):
+            y = 292
+            gray[y : y + template.shape[0], 202 : 202 + template.shape[1]] = 100
+        if i == 0 and gate == "wrong_pixels":
+            y = 1808
+            gray[y : y + template.shape[0], 202 : 202 + template.shape[1]] = 100
+        frames.append(cv2.imencode(".png", gray)[1].tobytes())
+    if ascending:
+        frames.reverse()
+    real_estimate = frameshift.estimate_shift
+
+    def refused(before, after, **kwargs):
+        raw = real_estimate(before, after, **kwargs)
+        delta = -489 if before == frames[1] else 489
+        if ascending:
+            delta = -delta
+        witness = dataclasses.replace(
+            raw.strips[0], state="matched", delta_px=delta, score=1.0
+        )
+        strips = (witness,)
+        if gate == "competing_pixels":
+            competing = -538 if delta > 0 else 538
+            strips += (dataclasses.replace(witness, delta_px=competing),)
+        if gate == "no_reverse_witness" and before == frames[1]:
+            strips = ()
+        return dataclasses.replace(
+            raw,
+            status=frameshift.SHIFT_NO_CONSENSUS,
+            delta_px=None,
+            consensus_px=delta,
+            saturated=False,
+            strips=strips,
+        )
+
+    # Reproduce the two individually best in-band detections from the incident.
+    # The counterpart search itself reads actual synthetic control pixels.
+    markers = (
+        item_index.VideoMuteMarker(frame_index=0, x=202, y=781, score=1.0),
+        item_index.VideoMuteMarker(frame_index=1, x=202, y=1319, score=1.0),
+    )
+    if ascending:
+        markers = tuple(
+            dataclasses.replace(m, frame_index=1 - m.frame_index) for m in markers
+        )
+    monkeypatch.setattr(drv, "_video_mute_marker_rows", lambda fs: markers)
+    monkeypatch.setattr(hinge, "estimate_shift", refused)
+    expected = (
+        None
+        if gate in ("no_reverse_witness", "wrong_pixels", "competing_pixels")
+        else (-489 if ascending else 489)
+    )
+    assert drv._measured_page_shift(*frames) == expected
+    monkeypatch.setattr(item_nav, "estimate_shift", refused)
+    result, _trace = item_nav._navigation_step_shift(
+        *frames, content_band=drv.content_band, trust_window_px=900, driver=drv
+    )
+    assert result.delta_px == expected

@@ -321,7 +321,7 @@ def test_a_tall_card_profile_is_allowed_the_larger_step():
     spacing = scroll_step.measure_local_spacing(_tall_frame().segment()).px
     low_px = int(scroll_step._STEP_RATIO_MIN * spacing)
     cap_px = scroll_step._MAX_STEP_PX
-    margin = min(scroll_step._STEP_DELIVERY_JITTER_PX, (cap_px - low_px) // 2)
+    margin = scroll_step._ENUMERATION_DELIVERY_HEADROOM_PX
     assert {p.window_px for p in plans} == {(low_px, cap_px - margin)}
     assert max(p.step_px for p in plans) <= scroll_step._MAX_STEP_PX
     assert min(p.step_px for p in plans) > 250
@@ -405,34 +405,24 @@ def test_the_draw_window_is_the_ratio_rule_applied_to_the_local_spacing():
         int(scroll_step._STEP_RATIO_MIN * spacing),
     )
     assert plan.window_px[0] == low_px
-    margin = min(scroll_step._STEP_DELIVERY_JITTER_PX, (cap_px - low_px) // 2)
+    margin = scroll_step._ENUMERATION_DELIVERY_HEADROOM_PX
     assert plan.window_px[1] == cap_px - margin
     assert plan.window_px[1] < plan.bound_px, (
         "the draw must leave headroom under the bound it is judged against"
     )
 
 
-def test_a_spacing_that_leaves_exactly_one_legal_step_says_so_instead_of_pretending_to_draw():
-    """The one place the jitter genuinely cannot exist, reported rather than hidden. Just above
-    the ~608px refusal threshold the gesture floor (219px) meets the aliasing ceiling
-    (0.36 x 609 = 219px), so every gesture on such a profile is the same distance. Nothing can fix
-    that — a smaller gesture is outside the driver's sanctioned window and a larger one breaks the
-    ratio rule — so what the plan owes the debug log is the fact.
-
-    The control is 3px of extra spacing, which re-opens the window and drops the message."""
-    forced = _stack((557, 557, 557)).segment()  # 557 + the 52px gutter floor = 609px
-    assert scroll_step.measure_local_spacing(forced).px == 609
-    plans = _draws(forced, n=50)
+def test_a_spacing_that_leaves_exactly_one_delivery_safe_step_reports_it():
+    seg = _tall_frame().segment()
+    plans = _draws(seg, n=50, profile_min_spacing_px=644)
     assert {p.window_px for p in plans} == {(219, 219)}
     assert {p.step_px for p in plans} == {219}
     assert "no jitter left to draw" in plans[0].reason
+    for plan in plans:
+        assert plan.bound_px == 231
+        assert scroll_step.step_overshoot(plan, plan.step_px + 12) is None
+        assert scroll_step.step_overshoot(plan, plan.step_px + 13) is not None
 
-    opened = _stack((560, 560, 560)).segment()  # 612px spacing
-    assert scroll_step.measure_local_spacing(opened).px == 612
-    wider = _draws(opened, n=50)
-    assert {p.window_px for p in wider} == {(219, 220)}
-    assert len({p.step_px for p in wider}) == 2
-    assert "no jitter left" not in wider[0].reason
 
 
 def test_a_spacing_taller_than_the_whole_ratio_window_does_not_collapse_onto_the_ceiling():
@@ -448,7 +438,7 @@ def test_a_spacing_taller_than_the_whole_ratio_window_does_not_collapse_onto_the
     plans = _draws(seg, n=500)
     floor_px = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
     cap_px = scroll_step._MAX_STEP_PX
-    margin = min(scroll_step._STEP_DELIVERY_JITTER_PX, (cap_px - floor_px) // 2)
+    margin = scroll_step._ENUMERATION_DELIVERY_HEADROOM_PX
     assert {p.window_px for p in plans} == {(floor_px, cap_px - margin)}
     assert _modal_share([p.step_px for p in plans]) < 0.15
     assert all(p.step_px / spacing < scroll_step._STEP_RATIO_MAX for p in plans)
@@ -467,38 +457,28 @@ def test_the_live_refusal_geometry_never_draws_the_bound_itself():
     tightened the sizing spacing to 646px, giving `bound_px` 232 and gesture floor 219. Both real
     on-device `scroll_overshot` refusals had `planned_step_px == bound_px == 232` — this is the
     geometry that produced them, run for real through the seeded planner: no draw may reach 232,
-    the window is exactly `219..229`, and jitter still exists (more than one distinct value)."""
+    the window is exactly `219..220`, and jitter still exists (more than one distinct value)."""
     seg = _tall_frame().segment()  # local spacing 1026px, well above 646
     plans = _draws(seg, n=500, profile_min_spacing_px=646)
 
     assert plans[0].bound_px == 232
-    assert {p.window_px for p in plans} == {(219, 229)}
-    assert max(p.step_px for p in plans) <= plans[0].bound_px - 3
+    assert {p.window_px for p in plans} == {(219, 220)}
+    assert max(p.step_px for p in plans) <= plans[0].bound_px - 12
     assert len({p.step_px for p in plans}) > 1, (
         "the window must still have real jitter in it"
     )
 
 
 def test_the_commanded_step_keeps_the_full_headroom_for_every_drawable_target():
-    """The headroom has to survive the frac ROUND-TRIP, not just the draw, and that is a
-    separate guarantee from the one above.
+    """Integer conversion must preserve all 12px, including at a +1px round-up.
 
-    `target_px` is drawn inside the window, but what gets commanded is
-    `step_px_for_frac(frac_for_step_px(target_px))`, and that round-trip can come back +1px
-    [measured on the calibrated 2400px screen: +1 for 3 of the 230 targets in 150..379px, 0 or -1
-    for the rest]. Clamping the walk-down loop at `cap_px` would therefore hand a whole pixel of
-    the reservation straight back and leave only 2px of real headroom -- under the +3px
-    over-delivery actually seen on device, i.e. precisely the case it was reserved for. So the
-    loop clamps at `draw_cap_px`.
-
-    Asserted over EVERY value the window can draw rather than over a sample, because the round-up
-    happens for a handful of specific targets and a seeded sample can miss all of them -- which
-    is exactly what makes this worth pinning separately.
+    Check every drawable target, rather than trusting a seeded sample to hit the
+    fractions whose endpoint truncation rounds up.
     """
     seg = _tall_frame().segment()
-    plan = _plan_on(seg, profile_min_spacing_px=646)
+    plan = _plan_on(seg, profile_min_spacing_px=738)
     low_px, draw_cap_px = plan.window_px
-    assert (low_px, draw_cap_px, plan.bound_px) == (219, 229, 232)
+    assert (low_px, draw_cap_px, plan.bound_px) == (219, 253, 265)
 
     for target_px in range(low_px, draw_cap_px + 1):
         frac = scroll_step.frac_for_step_px(target_px, _H)
@@ -508,9 +488,9 @@ def test_the_commanded_step_keeps_the_full_headroom_for_every_drawable_target():
             frac = max(frac_lo, frac - 1.0 / _H)
             commanded = scroll_step.step_px_for_frac(frac, _H)
         assert commanded <= draw_cap_px, target_px
-        assert plan.bound_px - commanded >= scroll_step._STEP_DELIVERY_JITTER_PX, (
+        assert plan.bound_px - commanded >= scroll_step._ENUMERATION_DELIVERY_HEADROOM_PX, (
             f"target {target_px} commands {commanded}px, leaving less than the reserved "
-            f"{scroll_step._STEP_DELIVERY_JITTER_PX}px under the {plan.bound_px}px bound"
+            f"{scroll_step._ENUMERATION_DELIVERY_HEADROOM_PX}px under the {plan.bound_px}px bound"
         )
 
 
@@ -532,52 +512,11 @@ def test_the_hard_bound_and_its_refusal_line_are_unchanged_by_the_headroom_reser
     )
 
 
-def test_a_window_too_narrow_for_full_headroom_still_keeps_at_least_two_drawable_values():
-    """AT MOST HALF THE WINDOW: reserving delivery headroom must never collapse the draw down to
-    one constant value, which is exactly the shape the owner's randomization rule forbids. At a
-    615px spacing the window before headroom is only 2px wide (219..221), so the full 3px jitter
-    margin does not fit; the planner must clip the margin rather than swallow the whole window,
-    keep at least two distinct drawable values, and say so in `reason`."""
-    seg = _stack((563, 563, 563)).segment()  # 563 + 52 = 615px spacing
-    assert scroll_step.measure_local_spacing(seg).px == 615
-    plan = _plan_on(seg)
-
-    assert plan.bound_px == 221
-    assert plan.window_px == (219, 220)
-    assert plan.window_px[1] > plan.window_px[0], (
-        "must keep at least two distinct drawable values"
-    )
-    assert plan.window_px[1] < plan.bound_px, (
-        "headroom is still reserved here, just clipped"
-    )
-    assert "only 1px of the 3px delivery headroom fits" in plan.reason
-    assert "over-deliver past the aliasing bound" in plan.reason
-
-    # And the draw genuinely uses both values rather than landing on one by construction.
-    steps = {p.step_px for p in _draws(seg, n=200)}
-    assert len(steps) > 1, steps
-
-
-def test_the_floor_meets_ceiling_degenerate_case_is_unchanged_by_the_headroom_reservation():
-    """The one case headroom reservation must leave completely alone: when the gesture floor
-    already meets the aliasing ceiling, `low_px` is reset to the floor and there is no window left
-    to reserve anything out of. `cap_px - low_px == 0` here, so `jitter_margin_px` is 0 and
-    `draw_cap_px == cap_px` — byte-for-byte the pre-change behaviour and its "no jitter left to
-    draw" message, with no partial-headroom clause appended alongside it."""
-    seg = _stack((557, 557, 557)).segment()  # 557 + 52 = 609px spacing
-    assert scroll_step.measure_local_spacing(seg).px == 609
-    plans = _draws(seg, n=50)
-
-    assert {p.window_px for p in plans} == {(219, 219)}
-    assert {p.step_px for p in plans} == {219}
-    assert plans[0].bound_px == 219
-    assert plans[0].window_px[1] == plans[0].bound_px, (
-        "no headroom exists to reserve here"
-    )
-    assert "no jitter left to draw" in plans[0].reason
-    assert "delivery headroom" not in plans[0].reason, (
-        "the partial-headroom clause must not also fire alongside the zero-headroom one"
-    )
+@pytest.mark.parametrize("spacing", [609, 612, 615, 641])
+def test_a_window_without_full_delivery_headroom_refuses_before_drawing(spacing):
+    # Previously these windows clipped away the safety margin to preserve jitter.
+    with pytest.raises(scroll_step.ScrollStepError, match="delivery headroom"):
+        _plan_on(_tall_frame().segment(), profile_min_spacing_px=spacing)
 
 
 # =====================================================================================
@@ -599,9 +538,8 @@ def test_the_ceiling_binds_before_a_very_tall_card_licenses_a_bigger_step():
     spacing = scroll_step.measure_local_spacing(seg).px
     assert scroll_step._STEP_RATIO_MAX * spacing > scroll_step._MAX_STEP_PX
     plans = _draws(seg)
-    low_px = int(scroll_step._STEP_RATIO_MIN * spacing)
     cap_px = scroll_step._MAX_STEP_PX
-    margin = min(scroll_step._STEP_DELIVERY_JITTER_PX, (cap_px - low_px) // 2)
+    margin = scroll_step._ENUMERATION_DELIVERY_HEADROOM_PX
     assert {p.window_px[1] for p in plans} == {cap_px - margin}
     assert max(p.step_px for p in plans) <= scroll_step._MAX_STEP_PX
 

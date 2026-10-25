@@ -984,6 +984,13 @@ def test_a_scroll_past_the_plans_own_aliasing_bound_stops():
     assert recovery.page_shift_px == -500
     assert recovery.achieved_step_px > recovery.bound_px
     assert "aliasing bound" in recovery.violation
+    assert exc.value.pair_before is not None
+    assert exc.value.measurement["code"] == item_nav.NAV_SCROLL_OVERSHOT
+    assert exc.value.measurement["planned"]["step_px"] == recovery.planned_step_px
+    assert exc.value.measurement["achieved"]["step_px"] == 500
+    assert exc.value.measurement["achieved"]["delivery_error_px"] == (
+        500 - recovery.planned_step_px
+    )
 
 
 def test_frames_that_cannot_be_put_in_one_coordinate_space_stop_the_count():

@@ -6989,3 +6989,21 @@ REPLAY (tub capture, 3 live samples):
 3 of 3 now answer the header rather than hand it back (was 1 of 3); 2 of 3 fully clean. Flash-lite
 remains the weak model on this profile in both replays. Three samples is anecdote, not a rate:
 WATCH header-choice items in the next live Training batch.
+
+
+#### Delivery headroom correction — 2026-10-24
+
+Run `4bc8fa6e8c42` stopped safely when an upward navigation step planned at
+221px moved 233px against the 231px bound for 644px spacing. The previous
+3px delivery allowance did not cover this observed +12px error. Ordinary
+enumeration and navigation now reserve the full 12px before drawing a step;
+the achieved-distance guard and its bound remain unchanged. This is an
+allowance for the observed error, not a guarantee about future delivery.
+
+At 644px spacing this leaves only the sanctioned 219px gesture floor; the
+plan reports the lack of distance jitter, while the lane and stroke remain
+humanized. Below the spacing needed for the floor plus the full allowance,
+planning refuses before issuing another gesture. The separate contradictory-frame
+recovery planner keeps its existing policy. Target-navigation overshoot and stall
+refusals now retain the exact frame pair, plan, measured displacement and strip
+traces, and bug reports summarize the delivery error beyond the log tail.

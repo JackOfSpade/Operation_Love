@@ -402,6 +402,11 @@ _MAX_STEP_PX = 363
 # stroke happened to deliver.
 _STEP_DELIVERY_JITTER_PX = 3
 
+# Run 4bc8fa6e8c42: a 221px plan delivered 233px against a 231px
+# bound. Ordinary enumeration/navigation must reserve this observed +12px,
+# even when that leaves only the gesture floor available.
+_ENUMERATION_DELIVERY_HEADROOM_PX = 12
+
 # The spacing the fallback step is sized against when a frame offers no measurement at all.
 # [corpus: 738px is the smallest heart-bearing spacing measured anywhere — 685px, the shortest
 # complete SELECTABLE block in 148 frames over two profiles, plus one 52px gutter. It appears
@@ -523,10 +528,10 @@ class ScrollStep:
     module docstring's "Both arguments, always": passing `frac` alone makes `_scroll_down_one`
     re-sample both from the behaviour policy and silently issue production's cadence instead.
 
-    `step_px` is what the transport model says this `frac` will actually move the content, not
-    what was asked for: the request is rounded through the transport's own integer truncation
-    (`step_px_for_frac`) and reported back as the truth, so `ratio` describes the gesture that
-    will really be made. `spacing_px` is None on a `STEP_FALLBACK` plan and `ratio` with it,
+    `step_px` is the transport model's predicted content movement for this `frac`.
+    The request is rounded through the transport's own integer truncation
+    (`step_px_for_frac`); delivery headroom covers observed over-delivery, and the
+    caller must still measure the actual movement before accepting the step. `spacing_px` is None on a `STEP_FALLBACK` plan and `ratio` with it,
     because there is no local measurement to be a ratio of.
 
     `sized_against_px` is the distance the step was actually computed from, which is the smallest
@@ -542,7 +547,7 @@ class ScrollStep:
     the plan really used, including a caller's own `ratio_window`.
 
     `window_px` is the closed `(low, high)` pixel interval this step was DRAWN from, after the
-    ratio window, `_MAX_STEP_PX` and the driver's own gesture floor have all been applied to it.
+    ratio window, `_MAX_STEP_PX`, delivery headroom and the driver's gesture floor are applied.
     It is carried because the entropy of the enumeration scroll is a safety property in its own
     right (the owner rule on fixed constants), and a window that has narrowed to one value — which
     a card spacing near the ~608px refusal threshold forces, and which no draw can undo — must be
@@ -772,22 +777,27 @@ def plan_scroll_step(
     # accumulates the point mass a clamp would have put there (module docstring, with the measured
     # before/after). Two overrides of `ratio_lo`, both in the safe direction:
     #   * the gesture floor. A spacing under ~842px puts `ratio_lo` of it below the smallest
-    #     read-scroll this driver may make, so the window narrows from below — and at ~609px it
-    #     closes onto the single legal distance, which is the device's answer and not a choice.
+    #     read-scroll this driver may make, so the window narrows from below and eventually
+    #     closes onto the single legal distance. Delivery headroom tightens that below.
     #   * `max_step_px`. Past ~1396px of spacing the whole ratio window sits above the ceiling;
     #     rather than collapsing onto it, the low end drops back to the floor. Every value in the
     #     window is then smaller than the ratio rule would have allowed.
     low_px = max(floor_px, int(ratio_lo * sizing_px))
     if low_px >= cap_px:
         low_px = floor_px
-    # AT MOST HALF THE WINDOW, never the whole of it. The headroom is worth having, but a window
-    # narrow enough that reserving 3px would collapse it has a bigger problem than delivery
-    # variance: a constant step distance is the exact shape the owner's randomization rule
-    # forbids, and this must not manufacture one. So a wide window gets the full margin and a
-    # narrow one keeps its jitter and accepts the residual risk, which the reason string below
-    # then says out loud rather than leaving for someone to infer from two numbers.
-    jitter_margin_px = min(_STEP_DELIVERY_JITTER_PX, (cap_px - low_px) // 2)
+    # Keep the full measured delivery allowance. A narrow draw must never spend
+    # that safety margin merely to preserve distance jitter.
+    jitter_margin_px = _ENUMERATION_DELIVERY_HEADROOM_PX
     draw_cap_px = cap_px - jitter_margin_px
+    if floor_px > draw_cap_px:
+        raise ScrollStepError(
+            f"cannot enumerate this profile: the {sizing_px}px spacing permits a "
+            f"{cap_px}px step, but the {floor_px}px gesture floor plus "
+            f"{jitter_margin_px}px measured delivery headroom does not fit; "
+            "no gesture was issued and the aliasing bound is unchanged"
+        )
+    if low_px >= draw_cap_px:
+        low_px = floor_px
     target_px = (rng.randint if rng is not None else random.randint)(
         low_px, draw_cap_px
     )
@@ -853,18 +863,8 @@ def plan_scroll_step(
         # outside the driver's sanctioned window and a larger one breaks the ratio rule — so what
         # the plan owes the log is that it happened.
         reason += (
-            f"; the {low_px}px gesture floor meets the {cap_px}px aliasing ceiling here, "
+            f"; the {low_px}px gesture floor meets the {draw_cap_px}px delivery-safe ceiling here, "
             "so this profile's step distance has no jitter left to draw"
-        )
-    elif jitter_margin_px < _STEP_DELIVERY_JITTER_PX:
-        # The window was too narrow to reserve the full delivery headroom, so a draw at the top
-        # of it can still be over-delivered past the bound. Say so: the alternative is a refusal
-        # whose telemetry shows a step below the bound and no hint of why it was still close
-        # enough to matter.
-        reason += (
-            f"; only {jitter_margin_px}px of the {_STEP_DELIVERY_JITTER_PX}px delivery "
-            f"headroom fits under the {cap_px}px ceiling, so a top-of-window draw can "
-            "still over-deliver past the aliasing bound"
         )
 
     return ScrollStep(

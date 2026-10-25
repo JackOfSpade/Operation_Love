@@ -2853,6 +2853,44 @@ def _item_index_geometry_md(lines: list[str], run: Path) -> str:
     return "\n".join(out)
 
 
+def _target_scroll_refusal_summary_md(lines: list[str]) -> str:
+    """Keep target-navigation delivery evidence visible beyond the action-log tail."""
+    out = []
+    for raw in lines:
+        try:
+            rec = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(rec, dict) or rec.get("action") != "navigate_to_item":
+            continue
+        if rec.get("reason") not in ("scroll_overshot", "scroll_stalled"):
+            continue
+        trace = rec.get("navigation_refusal")
+        if not isinstance(trace, dict):
+            continue
+        planned = trace.get("planned")
+        achieved = trace.get("achieved")
+        if not isinstance(planned, dict) or not isinstance(achieved, dict):
+            continue
+        bits = []
+        for fields, key, label in (
+            (planned, "step_px", "planned"),
+            (planned, "bound_px", "bound"),
+            (achieved, "step_px", "measured"),
+            (achieved, "delivery_error_px", "delivery error"),
+        ):
+            value = fields.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                bits.append(f"{label} {value}px")
+        out.append(f"- `{rec['reason']}`: " + "; ".join(bits))
+        for key in ("before", "after"):
+            name = rec.get(key)
+            if isinstance(name, str):
+                out.append(f"  - {key}: `{_sanitize_inline(name)}`")
+        out.extend(f"  {line}" for line in _shift_trace_lines_md(achieved))
+    return "\n".join(out[-40:])
+
+
 def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
     """Render a failed still-photo candidate walk separately from index construction.
 
@@ -6188,6 +6226,10 @@ def _one_debug_dir_md(
                     "(read from the same sidecar):"
                 )
                 out.extend(f"    {line}" for line in disagreement.splitlines())
+            target_scroll = _target_scroll_refusal_summary_md(raw_lines)
+            if target_scroll:
+                out.append("  - target-navigation scroll refusal:")
+                out.extend(f"    {line}" for line in target_scroll.splitlines())
             dwell_navigation = _dwell_navigation_refusal_summary_md(raw_lines)
             if dwell_navigation:
                 # "and cancellations" is not padding (2026-09-16): `navigation_cancelled` rows

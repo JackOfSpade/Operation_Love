@@ -2422,6 +2422,27 @@ def navigate_to_item(
                 frame_index=i + 1,
                 anchor=anchor,
                 recovery=recovery,
+                pair_before=frames[i],
+                measurement={
+                    "schema_version": 3,
+                    "code": NAV_SCROLL_STALLED if climb_px <= 0 else NAV_SCROLL_OVERSHOT,
+                    "frame_index": i + 1,
+                    "planned": {
+                        "step_px": step.step_px,
+                        "bound_px": step.bound_px,
+                        "window_px": list(step.window_px),
+                        "frac": step.frac,
+                        "basis": step.basis,
+                        "spacing_px": step.spacing_px,
+                        "sized_against_px": step.sized_against_px,
+                    },
+                    "achieved": {
+                        "step_px": climb_px,
+                        "delivery_error_px": climb_px - step.step_px,
+                        "forward": measurement_trace["forward"],
+                        "reverse": measurement_trace["reverse"],
+                    },
+                },
             )
         # UNCHANGED, deliberately: the page-space recurrence needs no flip because the sign is in
         # the measurement. An upward gesture produces a negative delta, so the offset decreases.

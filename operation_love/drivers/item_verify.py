@@ -1559,6 +1559,46 @@ def _check_reference_provenance(
         )
 
 
+def _inline_photo_header_rows(gray, *, np) -> int:
+    """Recognize a sparse white caption above one dense, bottom-attached photograph.
+
+    Measured on run 0422aa7e5150: the 1109px source has 371 caption rows before a dense
+    photo extending to within 3% of its bottom; the 738px composer window hides that caption.
+    The 10..40% header envelope, <=25% header ink, and >=half-card dense photo deliberately
+    refuse uncertain compositions. They do not change the calibrated distance ceilings.
+
+    This is source-only geometry, independent of the selected item and sheet similarity.
+    It never licenses an arbitrary patch: the full comparison width, content ceilings and
+    neighbour references remain unchanged. Ambiguous layouts retain the ordinary crop limit.
+    """
+    height, width = gray.shape
+    # Exclude the same control lane as the comparison, then require the existing 74% image
+    # evidence floor. A caption's text strokes cannot form a 300-row dense photo block.
+    width -= round(width * _INLINE_REFRAME_RIGHT_CONTROL_FRACTION)
+    density = (gray[:, :width] < 235).mean(axis=1)
+    dense = density >= 0.74
+    edges = np.diff(np.r_[False, dense, False].astype(np.int8))
+    runs = list(zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1), strict=True))
+    runs = [(int(a), int(b)) for a, b in runs if b - a >= max(300, height // 2)]
+    if len(runs) != 1:
+        return 0
+    start, end = runs[0]
+    if not 0.10 * height <= start <= 0.40 * height or height - end > 0.03 * height:
+        return 0
+    if float(density[:start].mean()) > 0.25:
+        return 0
+    # Blank sky/padding alone is not caption evidence. Require separate short ink bands,
+    # with white rows between them, as the measured title and two caption lines provide.
+    ink_edges = np.diff(np.r_[False, density[:start] >= 0.03, False].astype(np.int8))
+    ink_runs = list(zip(
+        np.flatnonzero(ink_edges == 1), np.flatnonzero(ink_edges == -1), strict=True
+    ))
+    text_bands = [b - a for a, b in ink_runs if 8 <= b - a <= start * 0.30]
+    if len(text_bands) < 2:
+        return 0
+    return start
+
+
 def _compare_item(
     crop,
     gray,
@@ -1661,7 +1701,15 @@ def _compare_item(
     # the short-photo renderer may supply its separately proven 40% only after the outlined
     # suggestion shelf is detected. The normal modal comparison above retains bottom anchoring.
     nominal_hidden = crop_height - window_px
-    if nominal_hidden > round(crop_height * inline_reframe_max_hidden_fraction):
+    header_rows = (
+        _inline_photo_header_rows(gray, np=np)
+        if nominal_hidden > round(crop_height * inline_reframe_max_hidden_fraction)
+        else 0
+    )
+    max_hidden = header_rows + round(
+        (crop_height - header_rows) * inline_reframe_max_hidden_fraction
+    )
+    if nominal_hidden > max_hidden:
         return (
             None,
             window_px,
@@ -1688,10 +1736,13 @@ def _compare_item(
         if not 0 < candidate <= crop_height:
             continue
         max_start = crop_height - candidate
-        if max_start > round(crop_height * inline_reframe_max_hidden_fraction):
+        if max_start > max_hidden:
             continue
         step = max(1, math.ceil(max_start / max(1, _INLINE_REFRAME_ORIGIN_SAMPLES - 1)))
-        starts = list(range(0, max_start + 1, step))
+        min_start = max(0, header_rows - tolerance) if header_rows else 0
+        if min_start > max_start:
+            continue
+        starts = list(range(min_start, max_start + 1, step))
         if starts[-1] != max_start:
             starts.append(max_start)
         windows.extend((candidate, start) for start in starts)
@@ -1736,7 +1787,8 @@ def _compare_item(
         window_px,
         reference,
         f"inline reframe rows {best_start}..{best_start + best_rows} of a {crop_height}px "
-        f"crop, width-derived {window_px}px swept +-{tolerance}px",
+        f"crop, width-derived {window_px}px swept +-{tolerance}px"
+        + (f"; sparse white header ends at source row {header_rows}" if header_rows else ""),
     )
 
 
@@ -2186,7 +2238,8 @@ def verify_sheet_item(
         return _verdict(
             VERIFY_MISMATCH,
             (
-                f"the sheet is not showing model item {model_index}: {mine.reason}. {nearest}"
+                f"the sheet could not be compared to model item {model_index}: {mine.reason}. "
+                f"This does not establish which item is on screen. {nearest}"
             ),
         )
     if nearest_index != model_index:

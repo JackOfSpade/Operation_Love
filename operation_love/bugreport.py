@@ -4482,9 +4482,18 @@ def _verify_mismatch_shape(item: dict) -> str:
         at all (see item_verify.verify_sheet_item: `nearest_index` is None only when no stored
         item had a usable distance).
 
+    An explicitly unmeasurable intended item (`distance=None`) takes precedence over those
+    legacy shapes: an argmin over the other items cannot establish that the intended item
+    was absent. Older records without `distance` retain their historical rendering.
+
     Tolerates missing/None/malformed `nearest` and `item` without raising -- this renders a
     stop, so explaining it must never itself become a new failure.
     """
+    if "distance" in item and item["distance"] is None:
+        return (
+            "the intended item could not be measured against this preview; the nearest "
+            "measurable crop does not establish a different item or a targeting miss"
+        )
     nearest = item.get("nearest")
     if nearest is None:
         return (

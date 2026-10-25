@@ -73,22 +73,19 @@ operation_love = ["drivers/assets/*.png", "assets/*.html"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-# Run the suite across processes by default: measured 2026-08-22 on a 12-core Mac, 19m33s
-# serial -> 2m50s with `-n auto`.  The count is not the reason it was slow -- 3761 of the 3821
-# tests share 458s between them -- 60 tests are 61% of the wall clock, because they drive the
-# real OpenCV pipeline (cv2.matchTemplate inside build_item_index / estimate_shift) over real
-# 1080x2400 frames.  Those are the highest-fidelity tests in the repo, so they are parallelised
-# rather than thinned.  `--dist loadgroup` distributes individual tests while still honouring
-# `@pytest.mark.xdist_group` if a future test ever needs pinning; nothing needs it today (the
-# hub's `_bind` already scans 200 ports and reads the bound one back, and tests/conftest.py's
-# `_machine_global_state_is_never_the_operators` gives every worker its own lock root and temp
-# directory).
+# Use at most two automatic workers: the 2026-10-25 unrestricted 12-worker run
+# coincided with severe memory/swap exhaustion and a macOS watchdog restart on the
+# owner's 24 GiB Mac. Free disk space does not remove that memory pressure.
+# Keep process parallelism for the expensive full-resolution OpenCV fixtures, but
+# cap `-n auto` / `-n logical` even when supplied explicitly on the command line.
+# `--dist loadgroup` preserves any xdist_group markers; each worker's lock roots
+# and temporary directories are isolated by tests/conftest.py.
 #
 # `-n0` turns it back off, and is what you want for `--pdb`, `-s`, or a readable single-test
 # traceback: `pytest -n0 tests/test_hub.py -k some_test -s`.  This line requires pytest-xdist,
 # which is why it is in the `dev` extra above; an environment without it fails with
 # "unrecognized arguments: -n" rather than silently running serially.
-addopts = ["-n", "auto", "--dist", "loadgroup"]
+addopts = ["-n", "auto", "--maxprocesses", "2", "--dist", "loadgroup"]
 
 [tool.ruff]
 target-version = "py311"

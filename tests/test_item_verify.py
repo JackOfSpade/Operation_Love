@@ -2488,3 +2488,68 @@ def test_lowering_the_one_item_ceiling_can_only_turn_accepts_into_refusals():
         )
     assert not refused.matched, "a tighter ceiling must refuse what it used to accept"
     assert refused.state == item_verify.VERIFY_MISMATCH
+
+
+def test_caption_header_does_not_spend_the_photo_reframe_budget():
+    """A 1109px caption/photo card can expose 738px without cropping away 30% of its photo."""
+    payload = _payload()
+    selected = payload.item(4)
+    gray = item_verify._decode_crop(selected, cv2, np).copy()
+    gray[:371] = 255
+    # Sparse caption strokes, with a dense, bottom-attached photo below them.
+    for y in (60, 150, 240):
+        gray[y:y + 12, 50:650] = 30
+    ok, encoded = cv2.imencode('.png', gray)
+    assert ok
+    data = encoded.tobytes()
+    selected = dataclasses.replace(
+        selected, image=data, verify_image=data,
+        signature=item_crops.signature_of(data, y0=0, y1=1109, x0=0, x1=974),
+    )
+    payload = dataclasses.replace(
+        payload, crops=tuple(selected if c.number == 4 else c for c in payload.crops)
+    )
+    frame = _paint_inline_reframe(data, start=371, rows=738, preview_height=674)
+    verdict = item_verify.verify_sheet_item(
+        frame, payload, 4, composer_surface=_inline_surface_for(frame), absolute_max_dist=10.0
+    )
+    assert verdict.matched, verdict.reason
+    assert 'sparse white header' in verdict.comparisons[3].reason
+    # The same preview still cannot license another numbered photo.
+    assert not item_verify.verify_sheet_item(
+        frame, payload, 3, composer_surface=_inline_surface_for(frame), absolute_max_dist=10.0
+    ).matched
+    # A different photograph with the same caption layout gets the same geometry allowance,
+    # but must still fail the unchanged content ceiling and separation gates.
+    foreign_gray = gray[:, ::-1].copy()
+    ok, foreign_encoded = cv2.imencode('.png', foreign_gray)
+    assert ok
+    foreign_frame = _paint_inline_reframe(
+        foreign_encoded.tobytes(), start=371, rows=738, preview_height=674
+    )
+    assert not item_verify.verify_sheet_item(
+        foreign_frame, payload, 4, composer_surface=_inline_surface_for(foreign_frame),
+        absolute_max_dist=10.0,
+    ).matched
+    # A smaller fragment exceeds even the photo-only budget and remains unmeasurable.
+    fragment = _paint_inline_reframe(data, start=500, rows=500, preview_height=457)
+    refusal = item_verify.verify_sheet_item(
+        fragment, payload, 4, composer_surface=_inline_surface_for(fragment)
+    )
+    assert not refusal.matched
+    assert refusal.distance is None
+
+
+def test_caption_allowance_requires_sparse_header_and_bottom_attached_photo():
+    gray = np.full((1109, 974), 100, dtype=np.uint8)
+    assert item_verify._inline_photo_header_rows(gray, np=np) == 0
+    gray[:371] = 255
+    assert item_verify._inline_photo_header_rows(gray, np=np) == 0
+    for y in (60, 150, 240):
+        gray[y:y + 12, 50:650] = 30
+    assert item_verify._inline_photo_header_rows(gray, np=np) == 371
+    gray[-50:] = 255
+    assert item_verify._inline_photo_header_rows(gray, np=np) == 0
+    gray[-50:] = 100
+    gray[:371, :400] = 30
+    assert item_verify._inline_photo_header_rows(gray, np=np) == 0

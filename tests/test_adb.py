@@ -728,7 +728,9 @@ def test_plan_path_endpoints_exact_and_count():
 
 
 def test_screencap_uses_exec_out_and_returns_raw_bytes(monkeypatch):
-    png = b"\x89PNG\r\n\x1a\nraw\r\nbytes"
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108000000003a7e9b550000000a49444154789c636000000002000148afa4710000000049454e44ae426082"
+    )
     run = FakeRun(_ok(stdout=png))
     monkeypatch.setattr(adb_mod.subprocess, "run", run)
 
@@ -744,7 +746,9 @@ def test_screencap_retries_once_after_a_host_side_timeout(monkeypatch):
         timeout=10,
         stderr=b"transport stalled",
     )
-    png = b"\x89PNG\r\n\x1a\nrecovered"
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108000000003a7e9b550000000a49444154789c636000000002000148afa4710000000049454e44ae426082"
+    )
     run = FakeRun(timeout, _ok(stdout=png))
     monkeypatch.setattr(adb_mod.subprocess, "run", run)
 

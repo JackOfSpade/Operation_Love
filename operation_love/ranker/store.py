@@ -17,6 +17,7 @@ import re
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from ..costing import Usage
@@ -87,11 +88,14 @@ def _timestamp_parts(
                 raise _invalid_timestamp(label)
             try:
                 epoch = parsed.timestamp()
+                # A legal local datetime near year 1/9999 can fall outside the
+                # representable UTC range once its timezone offset is applied.
+                utc = parsed.astimezone(datetime.timezone.utc)
             except (OSError, OverflowError, ValueError) as exc:
                 raise _invalid_timestamp(label) from exc
             if not math.isfinite(epoch):
                 raise _invalid_timestamp(label)
-            return epoch, parsed.astimezone(datetime.timezone.utc)
+            return epoch, utc
     else:
         raise _invalid_timestamp(label)
 
@@ -978,6 +982,30 @@ class SQLiteStore:
         self.con.commit()
         self._tighten_private_files()
 
+    @contextmanager
+    def _write_transaction(self):
+        """Serialize a write and discard its uncommitted changes when it fails.
+
+        SQLite's default ABORT behavior only undoes the failing statement. Without
+        a rollback, earlier statements in the same operation remain visible on this
+        shared connection and an unrelated write can commit them later. A failure
+        tightening file permissions after commit still raises, but cannot undo data
+        that SQLite already committed.
+        """
+        with self._lock:
+            try:
+                yield
+                self._commit()
+            except BaseException as exc:
+                try:
+                    self.con.rollback()
+                except Exception as rollback_error:
+                    exc.add_note(
+                        "SQLite rollback also failed "
+                        f"({type(rollback_error).__name__}: {rollback_error})"
+                    )
+                raise
+
     def load_labels(self) -> list[tuple[bool, list[float]]]:
         # A projection of load_label_rows, never a second query: the two must return the
         # same rows in the same order (same retraction filter) or a caller zipping them
@@ -1053,12 +1081,12 @@ class SQLiteStore:
                 )
                 self._commit()
             except sqlite3.Error as exc:
-                if not best_effort:
-                    raise
                 try:
                     self.con.rollback()
                 except sqlite3.Error:
                     pass
+                if not best_effort:
+                    raise
                 print(
                     "WARNING: SQLite store: the best-effort photo_features row for "
                     f"{row['app']}/{row['profile_id']} was NOT saved "
@@ -1200,7 +1228,7 @@ class SQLiteStore:
         profile_name="",
         **_,
     ):
-        with self._lock:
+        with self._write_transaction():
             self._insert_label_locked(
                 run_id,
                 app,
@@ -1211,7 +1239,6 @@ class SQLiteStore:
                 profile_id,
                 profile_name,
             )
-            self._commit()
 
     def _insert_label_locked(
         self,
@@ -1259,7 +1286,7 @@ class SQLiteStore:
         earlier version did) silently destroyed an unrelated swipe while the mistaken answer
         stayed in the training set.  ``undo_latest_auto_review`` is the undo for an answer.
         """
-        with self._lock:
+        with self._write_transaction():
             row = self.con.execute(
                 "SELECT l.id, n.profile_name, l.profile_id, l.source FROM labels AS l "
                 "LEFT JOIN training_label_names AS n ON n.label_id=l.id "
@@ -1274,7 +1301,6 @@ class SQLiteStore:
             self.con.execute(
                 "DELETE FROM training_label_names WHERE label_id=?", (row[0],)
             )
-            self._commit()
         return {"profile_name": str(row[1] or ""), "profile_id": str(row[2] or "")}
 
     def record_decision(
@@ -1292,13 +1318,12 @@ class SQLiteStore:
             if created_at is None
             else normalize_timestamp_epoch(created_at, label="created_at")
         )
-        with self._lock:
+        with self._write_transaction():
             self.con.execute(
                 "INSERT INTO decisions (run_id, app, created_at, decision, score, source, profile_id) "
                 "VALUES (?,?,?,?,?,?,?)",
                 (run_id, app, timestamp, decision, score, source, profile_id),
             )
-            self._commit()
 
     def retraction_run_rows(self, run_id: str, app: str, source: str) -> dict:
         """Exact minimal run rows used by the correction planner; no embeddings/photos."""
@@ -1393,7 +1418,7 @@ class SQLiteStore:
             )
         except (KeyError, ValueError) as exc:
             raise RetractionRefused("SQLite correction timestamps are invalid") from exc
-        with self._lock:
+        with self._write_transaction():
             existing = self.con.execute(
                 """SELECT correction_id FROM label_retractions
                 WHERE run_id=? AND app=? AND source=? AND profile_id=?
@@ -1412,7 +1437,6 @@ class SQLiteStore:
                 decision_fingerprint,reason,evidence_ref,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 values,
             )
-            self._commit()
         return cur.rowcount == 1
 
     def observe_release_persistence_summary(
@@ -1700,7 +1724,7 @@ class SQLiteStore:
             raise RetractionRefused(
                 "SQLite opener correction timestamp is invalid"
             ) from exc
-        with self._lock:
+        with self._write_transaction():
             source = self.con.execute(
                 "SELECT model,opener FROM openers WHERE run_id=? AND app=? AND created_at=?",
                 (row["run_id"], row["app"], opener_at),
@@ -1747,7 +1771,6 @@ class SQLiteStore:
                 "VALUES (?,?,?,?,?,?,?,?,?)",
                 values,
             )
-            self._commit()
         return cur.rowcount == 1
 
     def record_opener(
@@ -1796,7 +1819,7 @@ class SQLiteStore:
                 decision_created_at, label="decision_created_at"
             )
         )
-        with self._lock:
+        with self._write_transaction():
             self.con.execute(
                 "INSERT INTO openers (run_id, app, created_at, model, opener, referenced, angle,"
                 " item_description, profile_id, decision, decision_source, decision_created_at,"
@@ -1819,7 +1842,6 @@ class SQLiteStore:
                     profile_key,
                 ),
             )
-            self._commit()
 
     def record_opener_outcome(
         self,
@@ -1841,13 +1863,12 @@ class SQLiteStore:
             if observed_at is None
             else normalize_timestamp_epoch(observed_at, label="observed_at")
         )
-        with self._lock:
+        with self._write_transaction():
             self.con.execute(
                 "INSERT INTO opener_outcomes (app, profile_key, outcome, observed_at, source,"
                 " note, created_at) VALUES (?,?,?,?,?,?,?)",
                 (app, profile_key, outcome, timestamp, source, note, time.time()),
             )
-            self._commit()
 
     def joined_opener_outcomes(
         self, app: str, *, prompt_sha256: str | None = None
@@ -1915,7 +1936,7 @@ class SQLiteStore:
         # `prompt_sha256`: same era digest the successes carry (see record_opener above), so a
         # guard's firing rate is attributable to the prompt that provoked it. Keyword-only, so
         # the seven existing parameters stay positional for every caller and test double.
-        with self._lock:
+        with self._write_transaction():
             self.con.execute(
                 "INSERT INTO opener_rejections (run_id, app, created_at, model, attempt,"
                 " reason_code, reason, raw_opener, prompt_sha256)"
@@ -1932,7 +1953,6 @@ class SQLiteStore:
                     prompt_sha256,
                 ),
             )
-            self._commit()
 
     # --- auto pass archive + owner review ---------------------------------------------
     def record_auto_pass(
@@ -2436,7 +2456,7 @@ class SQLiteStore:
         return {**waiting, "total": sum(waiting.values())}
 
     def record_spend(self, run_id, model, usage: Usage, cost):
-        with self._lock:
+        with self._write_transaction():
             self.con.execute(
                 "INSERT INTO spend (run_id, created_at, model, input_tokens, output_tokens,"
                 " cache_read_tokens, cache_write_tokens, cost_usd) VALUES (?,?,?,?,?,?,?,?)",
@@ -2451,7 +2471,6 @@ class SQLiteStore:
                     cost,
                 ),
             )
-            self._commit()
 
     def count_today(self, app: str, *, source: str = "auto") -> int:
         """Decisions from one validated source since local midnight."""
@@ -2488,8 +2507,8 @@ class SQLiteStore:
         return {}
 
     def flush(self) -> None:
-        with self._lock:
-            self._commit()
+        with self._write_transaction():
+            pass
 
     def close(self) -> None:
         with self._lock:

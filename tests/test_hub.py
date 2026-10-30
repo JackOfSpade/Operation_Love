@@ -1337,10 +1337,14 @@ def test_serve_browser_timer_is_daemon_and_socket_is_closed(monkeypatch):
             self.target = target
             self.daemon = False
             self.started = False
+            self.cancelled = False
             timers.append(self)
 
         def start(self):
             self.started = True
+
+        def cancel(self):
+            self.cancelled = True
 
     httpd = _FakeHttpd()
     monkeypatch.setattr(
@@ -1353,6 +1357,7 @@ def test_serve_browser_timer_is_daemon_and_socket_is_closed(monkeypatch):
 
     assert len(timers) == 1
     assert timers[0].delay == 0.6 and timers[0].daemon and timers[0].started
+    assert timers[0].cancelled
     assert httpd.closed is True
 
 
@@ -1383,6 +1388,9 @@ def test_serve_closes_socket_when_optional_browser_timer_cannot_start(
 
         def start(self):
             raise RuntimeError("thread resources exhausted")
+
+        def cancel(self):
+            pass
 
     httpd = _FakeHttpd()
     monkeypatch.setattr(
@@ -3756,6 +3764,35 @@ def test_render_run_status_shows_auto_cold_start_defer_message():
     assert "cold-start" in result["html"]
 
 
+@pytest.mark.parametrize("mode", ["auto", "training"])
+def test_render_run_status_keeps_driver_close_cause_ahead_of_stale_cold_start(mode):
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    snap = {
+        "running": False,
+        "status": {
+            "mode": mode,
+            "phase": "stopped",
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": mode,
+                    "state": "stopped",
+                    "last_decision": "defer",
+                    "stop_kind": "driver_closed",
+                    "stop_reason": "DriverClosed: hid exited <unexpectedly>",
+                },
+            },
+        },
+    }
+    result = _run_node(_runstatus_script(snap))
+    assert result["display"] == "block"
+    assert "app or device connection closed" in result["html"]
+    assert "DriverClosed: hid exited &lt;unexpectedly&gt;" in result["html"]
+    assert "cold-start" not in result["html"]
+    assert "<unexpectedly>" not in result["html"]
+
+
 def test_render_run_status_shows_auto_opener_exhaustion_stop_reason():
     # WS-opener-reason: an auto-mode app halted because OpenerService ran out of opener
     # capacity (budget/credit/provider failure) used to render IDENTICALLY to a plain
@@ -4111,7 +4148,7 @@ def test_tick_drives_one_real_run_status_banner_and_the_separate_training_checkp
     assert re.search(r'<aside\s+id="trainingpanel"(?:\s|>)', _PAGE)
     tick_fn = _extract_js_function(_PAGE, "tick")
     script = (
-        "const calls = []; let _statusRequest = 0;\n"
+        "const calls = []; let _statusRequest = 0, _statusAppliedRequest = 0;\n"
         "async function getJSON(){ return {running:false,status:{apps:{}}}; }\n"
         "function renderGlobal(){ calls.push('global'); }\n"
         "function renderRunStatus(){ calls.push('run-status'); }\n"
@@ -4128,7 +4165,7 @@ def test_tick_discards_an_out_of_order_status_response():
         pytest.skip("node is not available on this machine")
     tick_fn = _extract_js_function(_PAGE, "tick")
     script = (
-        "const renders=[]; const resolvers=[]; let _statusRequest=0;\n"
+        "const renders=[]; const resolvers=[]; let _statusRequest=0, _statusAppliedRequest=0;\n"
         "function getJSON(){return new Promise(resolve=>resolvers.push(resolve));}\n"
         "function renderGlobal(s){renders.push(['global',s.version]);}\n"
         "function renderRunStatus(s){renders.push(['run',s.version]);}\n"
@@ -5373,7 +5410,7 @@ def test_stopping_immediately_replaces_actionable_checkpoint_with_non_actionable
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     script = (
-        "let _trainingRequest=0, seen=null;\n"
+        "let _trainingRequest=0, _trainingAppliedRequest=0, _trainingPollContext='', seen=null;\n"
         "function selectRunApps(status){return Object.values(status.apps).filter(a=>a.mode==='training'||a.mode==='auto');}\n"
         "function renderTrainingFeedback(result,message){seen={result,message};}\n"
         "function renderTrainingCheckpoint(){throw new Error('must not render an actionable card while stopping');}\n"
@@ -5420,7 +5457,7 @@ def test_training_choice_posts_the_bound_checkpoint_and_idempotency_token():
         "const hubClientId='hub-client';\n"
         "const window={crypto:{randomUUID:()=> 'nonce'}}; const crypto=window.crypto;\n"
         "const _trainingIdempotency=new Map(); let _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0, _trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null;\n"
-        "let _trainingCheckpoint={run_id:'run-1',app:'hinge',profile_token:'profile-1',approval_token:'approval-1',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
+        "let _trainingCheckpoint={run_id:'run-1',app:'hinge',profile_token:'profile-1',approval_token:'approval-1',pending:true,phase:'waiting_training_decision',action:'ready',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
         "let posted=null, renders=[], ticks=0;\n"
         "function renderTrainingCheckpoint(checkpoint,message){renders.push([checkpoint,message]);}\n"
         "async function postJSON(path,body){posted={path,body};return {ok:true};}\n"
@@ -5489,7 +5526,7 @@ def test_training_action_failure_reenables_the_live_card_before_the_next_poll():
         "const hubClientId='hub-client';\n"
         "const window={crypto:{randomUUID:()=> 'nonce'}}; const crypto=window.crypto;\n"
         "const _trainingIdempotency=new Map(); let _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0, _trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null;\n"
-        "let _trainingCheckpoint={run_id:'run-1',app:'hinge',profile_token:'profile-1',approval_token:'approval-1',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
+        "let _trainingCheckpoint={run_id:'run-1',app:'hinge',profile_token:'profile-1',approval_token:'approval-1',pending:true,phase:'waiting_training_decision',action:'ready',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
         "let renders=[], ticks=0;\n"
         "function renderTrainingCheckpoint(checkpoint,message){renders.push({message,busy:_trainingActionBusy,checkpoint});}\n"
         "async function postJSON(){return {ok:false,result:{reason:'stale approval'}};}\n"
@@ -5525,8 +5562,8 @@ def test_old_hung_training_post_cannot_change_new_card_busy_state():
         "const hubClientId='hub-client';\n"
         "const window={crypto:{randomUUID:()=> 'nonce'}}; const crypto=window.crypto;\n"
         "const _trainingIdempotency=new Map(); let _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0, _trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null;\n"
-        "const oldCard={run_id:'old',app:'hinge',profile_token:'p1',approval_token:'a1',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
-        "const newCard={run_id:'new',app:'hinge',profile_token:'p2',approval_token:'a2',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
+        "const oldCard={run_id:'old',app:'hinge',profile_token:'p1',approval_token:'a1',pending:true,phase:'waiting_training_decision',action:'ready',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
+        "const newCard={run_id:'new',app:'hinge',profile_token:'p2',approval_token:'a2',pending:true,phase:'waiting_training_decision',action:'ready',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
         "let _trainingCheckpoint=oldCard, resolves=[];\n"
         "function renderTrainingCheckpoint(){} function tick(){}\n"
         "function postJSON(){return new Promise(resolve=>resolves.push(resolve));}\n"
@@ -6027,8 +6064,8 @@ def test_a_transient_disconnect_does_not_leave_the_decision_buttons_dead():
     assert result["lost"]["like"] is True, (
         "the disconnect must still disable the decision"
     )
-    assert result["renders"] == 2, (
-        "the reconnecting poll has to repaint, not short-circuit"
+    assert result["renders"] == 3, (
+        "disconnect retires the card, then the reconnecting poll must repaint it"
     )
     assert result["like"] is False and result["dislike"] is False
     assert result["hint"] == "ready"
@@ -6413,3 +6450,56 @@ def test_duplicate_launch_detects_real_running_http_server(monkeypatch):
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=5)
+
+
+def test_disconnected_training_rerenders_cannot_enable_or_submit_decisions():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    script = (
+        "let _hubConnectionLost=false, posted=0;\n"
+        + _training_panel_script(_training_checkpoint_with()).rsplit("console.log(", 1)[
+            0
+        ]
+    )
+    script += "\n" + "\n".join(
+        _extract_js_function(_PAGE, name)
+        for name in ("renderHubConnectionLost", "submitTrainingAction")
+    )
+    script += """
+async function postJSON(){posted++;}
+const stale=_trainingCheckpoint;
+renderHubConnectionLost();
+const retired=_trainingCheckpoint===null;
+renderTrainingCheckpoint(stale);
+submitTrainingAction('like').then(()=>console.log(JSON.stringify({
+  retired,posted,html:panel.innerHTML
+})));
+"""
+    result = _run_node(script)
+    assert result["retired"] is True
+    assert result["posted"] == 0
+    for button in ("traininglike", "trainingdislike"):
+        assert re.search(rf'<button id="{button}"[^>]* disabled', result["html"])
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"pending": False},
+        {"phase": "executing_training_decision"},
+        {"action": "queued"},
+    ],
+)
+def test_training_submission_requires_a_ready_checkpoint(state):
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    script = _training_panel_script(_training_checkpoint_with(**state)).rsplit(
+        "console.log(", 1
+    )[0]
+    script += "\n" + _extract_js_function(_PAGE, "submitTrainingAction")
+    script += """
+let posted=0;
+async function postJSON(){posted++;}
+submitTrainingAction('like').then(()=>console.log(JSON.stringify({posted})));
+"""
+    assert _run_node(script) == {"posted": 0}

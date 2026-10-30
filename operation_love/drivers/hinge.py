@@ -139,6 +139,7 @@ from .frameshift import (
     ShiftEstimationError,
     estimate_shift,
     estimate_shift_with_reverse_recovery,
+    interleaved_strip_matches,
     trace_estimate,
 )
 from .item_crops import (
@@ -168,10 +169,9 @@ from .item_crops import (
 from .item_type_preflight import INCONCLUSIVE, ItemTypePreflight, preflight_item_type
 from .item_identity import IdentityError, compare_profile_identity
 from .item_index import (
-    ITEM_PARTIAL,
     ItemIndex,
     ItemIndexError,
-    _UNCERTAIN_HEART_NOTE,
+    _confirmed_top_retry_resolves_failures,
     _direct_marker_bridge_delta,
     _unique_markers_by_frame,
     _edge_only_two_strip_shift,
@@ -183,7 +183,6 @@ from .item_index import (
     _observed_gutters,
     _structural_landmarks,
     _project_to_exact_full_layout,
-    _SCROLL_TOP_CORNER_FAILURE_PREFIX,
     _structural_tail_shift,
     VideoMuteMarker,
     build_item_index,
@@ -6203,49 +6202,14 @@ class AndroidDriver(DatingAppDriver):
         producer's exact uncertainty text; an uncertainty anywhere else, a third failure, a
         heart-bearing/bounded leading block, or malformed test-double data remains a refusal.
 
-        The exact producer-owned strings and structure make this fail closed.  If item_index
-        changes either diagnosis without updating this import, the retry is skipped rather than
-        broadened.
+        The producer owns this predicate so its repair probe and the live retry recognise the
+        same dependent failures. Neither path accepts an independently uncertain block.
         """
-        try:
-            failures = tuple(getattr(index, "failures", ()) or ())
-            blocks = tuple(index.blocks)
-            first = blocks[0]
-            if (
-                not index.at_scroll_top
-                or not isinstance(first.page_y0, int)
-                or not isinstance(first.page_y1, int)
-                or first.page_y1 <= first.page_y0
-            ):
-                return False
-        except (AttributeError, IndexError, TypeError):
-            return False
-        corner_failures = tuple(
-            failure
-            for failure in failures
-            if isinstance(failure, str)
-            and failure.startswith(_SCROLL_TOP_CORNER_FAILURE_PREFIX)
+        return _confirmed_top_retry_resolves_failures(
+            getattr(index, "blocks", ()),
+            getattr(index, "failures", ()),
+            at_scroll_top=getattr(index, "at_scroll_top", False),
         )
-        if len(failures) == 1:
-            return len(corner_failures) == 1
-        if len(failures) != 2 or len(corner_failures) != 1:
-            return False
-        try:
-            leading = blocks[0]
-            if (
-                len(blocks) <= 1
-                or leading.kind != ITEM_PARTIAL
-                or leading.hearts
-                or leading.complete
-            ):
-                return False
-            dependent_uncertainty = (
-                f"the block at page rows {leading.page_y0}..{leading.page_y1} "
-                + _UNCERTAIN_HEART_NOTE
-            )
-        except (AttributeError, TypeError):
-            return False
-        return sum(failure == dependent_uncertainty for failure in failures) == 1
 
     def _restart_index_from_confirmed_top(
         self,
@@ -6965,14 +6929,66 @@ class AndroidDriver(DatingAppDriver):
         except Exception as exc:  # noqa: BLE001 -- same rule, for a non-production estimate double
             return {"error": f"{type(exc).__name__}: {exc}"}
 
+    def _independent_interleaved_video_deltas(self, frames, result, reverse):
+        """Find exact reciprocal witnesses on separate pixels when the source grids miss.
+
+        These strips only corroborate video-control identity; they never vote in frameshift's
+        quorum. A supplemental strip must map outside EVERY ordinary supporting strip, so
+        re-searching the same pixels cannot manufacture an independent witness (Ella, -219px).
+        Both ordinary directions must have located content before this extra search is earned.
+        """
+        banks = (result, reverse)
+        if any(
+            bank is None
+            or bank.saturated
+            or bank.status != SHIFT_NO_CONSENSUS
+            or not any(s.state == STRIP_MATCHED for s in bank.strips)
+            for bank in banks
+        ):
+            return {}
+        evidence = {}
+        for i, bank in enumerate(banks):
+            seeds = tuple(
+                s
+                for s in bank.strips
+                if s.state == STRIP_MATCHED and s.delta_px is not None
+            )
+            extra = interleaved_strip_matches(
+                frames[1 - i], frames[i], content_band=self.content_band
+            )
+            for strip in extra:
+                if strip.state != STRIP_MATCHED or strip.delta_px is None:
+                    continue
+                delta = -strip.delta_px  # ordinary seed's direction
+                support = tuple(s for s in seeds if s.delta_px == delta)
+                mapped = (strip.y0 + delta, strip.y1 + delta)
+                if not support or any(
+                    mapped[0] < s.y1 and s.y0 < mapped[1] for s in support
+                ):
+                    continue
+                canonical = delta if i == 0 else -delta
+                evidence.setdefault(canonical, []).append(
+                    {
+                        "seed_frame": i,
+                        "seed_rows": [[s.y0, s.y1] for s in support],
+                        "supplemental_rows": [strip.y0, strip.y1],
+                        "mapped_rows": list(mapped),
+                        "score": round(strip.score, 6),
+                        "runner_up": round(strip.runner_up, 6),
+                    }
+                )
+        return evidence
+
     def _pixel_witnessed_video_marker_pair(self, frames, by_frame, result, reverse):
         """Resolve repeated video controls only with reciprocal exact pixel witnesses.
 
         Equal-height adjacent videos repeat their mute/edge/heart geometry. A unique
         in-band control in each frame therefore need not belong to the same card
         (run 2925a663b9d1). A strip from each direction must name the SAME signed
-        displacement before we search the predicted control origin. The ordinary
-        direct bridge still has to corroborate it with an observed card anchor.
+        displacement before we search the predicted control origin. If the ordinary grids
+        miss each other's stable pixels, a fixed midpoint grid may supply the opposite witness
+        only from a disjoint image region. The ordinary direct bridge still has to corroborate
+        it with an observed card anchor.
         """
         forward_deltas = {
             s.delta_px
@@ -7008,48 +7024,67 @@ class AndroidDriver(DatingAppDriver):
         if any(seg.failures for seg in segs):
             return None
         bound = min(result.trust_window_px, _pitch_relative_max_step(segs))
-        pairs = {}
-        for delta in forward_deltas & reverse_deltas:
-            if not 0 < abs(delta) <= bound:
-                continue
-            for i, marker in by_frame.items():
-                j = 1 - i
-                y = marker.y - delta if i == 0 else marker.y + delta
-                if (
-                    not round(top * height)
-                    <= y
-                    <= round(band[1] * height) - template.shape[0]
-                ):
+
+        def witnessed_pairs(deltas):
+            found = {}
+            for delta in deltas:
+                if not 0 < abs(delta) <= bound:
                     continue
-                ok, score, origin = self._locate_video_mute(
-                    frames[j],
-                    (marker.x, y, marker.x + template.shape[1], y + template.shape[0]),
-                )
-                if (
-                    not ok
-                    or score is None
-                    or score < _VIDEO_MUTE_MATCH_THRESHOLD
-                    or origin != (marker.x, y)
-                ):
-                    continue
-                other = VideoMuteMarker(frame_index=j, x=marker.x, y=y, score=score)
-                pair = {i: marker, j: other}
-                a, b = (0, 1) if delta > 0 else (1, 0)
-                measured = _direct_marker_bridge_delta(
-                    segs[a],
-                    segs[b],
-                    before_marker=pair[a],
-                    after_marker=pair[b],
-                    max_step_px=bound,
-                )
-                if measured == abs(delta):
-                    pairs[(delta, pair[0].x, pair[0].y, pair[1].y)] = pair
+                for i, marker in by_frame.items():
+                    j = 1 - i
+                    y = marker.y - delta if i == 0 else marker.y + delta
+                    if (
+                        not round(top * height)
+                        <= y
+                        <= round(band[1] * height) - template.shape[0]
+                    ):
+                        continue
+                    ok, score, origin = self._locate_video_mute(
+                        frames[j],
+                        (
+                            marker.x,
+                            y,
+                            marker.x + template.shape[1],
+                            y + template.shape[0],
+                        ),
+                    )
+                    if (
+                        not ok
+                        or score is None
+                        or score < _VIDEO_MUTE_MATCH_THRESHOLD
+                        or origin != (marker.x, y)
+                    ):
+                        continue
+                    other = VideoMuteMarker(frame_index=j, x=marker.x, y=y, score=score)
+                    pair = {i: marker, j: other}
+                    a, b = (0, 1) if delta > 0 else (1, 0)
+                    measured = _direct_marker_bridge_delta(
+                        segs[a],
+                        segs[b],
+                        before_marker=pair[a],
+                        after_marker=pair[b],
+                        max_step_px=bound,
+                    )
+                    if measured == abs(delta):
+                        found[(delta, pair[0].x, pair[0].y, pair[1].y)] = pair
+            return found
+
+        pairs = witnessed_pairs(forward_deltas & reverse_deltas)
+        supplemental = {}
+        if not pairs:
+            # A coincident video-motion offset in both regular banks is not a page witness
+            # unless its predicted control and card anchor also exist. Only after those
+            # candidates fail may a separate sampling phase look for the missing evidence.
+            supplemental = self._independent_interleaved_video_deltas(
+                frames, result, reverse
+            )
+            pairs = witnessed_pairs(supplemental)
         # Several physical videos may independently prove the same translation;
         # competing translations remain ambiguous and cannot move the anchor.
         if len({key[0] for key in pairs}) != 1:
             return None
         key, pair = next(iter(pairs.items()))
-        return key[0], pair, band, bound
+        return key[0], pair, band, bound, supplemental.get(key[0])
 
     def _recover_video_marker_page_shift(self, before, after, result, reverse=None):
         """Measure a refused single leg from app-owned video UI and a separate card anchor.
@@ -7153,16 +7188,17 @@ class AndroidDriver(DatingAppDriver):
             if reverse is not None
             else set()
         )
+        supplemental_witnesses = None
         if any(abs(w - delta) > _AGREEMENT_TOLERANCE_PX for w in witnesses):
             try:
                 witnessed = self._pixel_witnessed_video_marker_pair(
                     (before, after), by_frame, result, reverse
                 )
-            except (SegmentationError, ItemIndexError):
+            except (SegmentationError, ItemIndexError, ShiftEstimationError):
                 witnessed = None
             if witnessed is None:
                 return result
-            delta, by_frame, marker_band, bound = witnessed
+            delta, by_frame, marker_band, bound, supplemental_witnesses = witnessed
         recovered = dataclasses.replace(
             result,
             delta_px=delta,
@@ -7186,6 +7222,7 @@ class AndroidDriver(DatingAppDriver):
                     marker_origins=[[by_frame[i].x, by_frame[i].y] for i in (0, 1)],
                     forward=trace_estimate(result),
                     reverse=trace_estimate(reverse),
+                    supplemental_witnesses=supplemental_witnesses,
                     reason=recovered.reason,
                 )
             except Exception:  # noqa: BLE001 -- diagnostics cannot change measurement authority
@@ -7954,7 +7991,7 @@ class AndroidDriver(DatingAppDriver):
             pass
 
     def _dbg_still_photo_progressive_sweep(self, outcome: str, **fields) -> None:
-        """Record the deep-candidate sweep without changing any targeting decision."""
+        """Record the candidate sweep without changing any targeting decision."""
         if self._dbg is None:
             return
         try:
@@ -8073,13 +8110,14 @@ class AndroidDriver(DatingAppDriver):
         Proximity is therefore the only ordering this layer can justify, and bottom-most first is
         cheapest because `navigate_to_item` only walks UP from the entry.
 
-        SHORT HOPS RETURN TO THE ENTRY. An intermediate return establishes the next dwell hop's
-        start, while the final return establishes the later model-targeting pass's start. Once a
-        candidate exceeds the probe-derived four-leg envelope, the remaining candidates instead
-        enter one progressive sweep: each next `navigate_to_item` call receives the preceding
-        measured terminal frame and a correspondingly rebased index, then one finite capped-leg
-        chain repays the sweep to the original entry. See
-        `_still_photo_dwell_progressive_sweep`; neither path assumes a gesture landed.
+        MULTIPLE CANDIDATES SHARE ONE MEASURED RETURN. A typed index with at least two remaining
+        slots enters one progressive sweep immediately: each next `navigate_to_item` receives
+        the preceding measured terminal frame and a correspondingly rebased index. One finite
+        capped-leg chain then repays the sweep to the original entry. Returning after each
+        shallow candidate needlessly retraced the same page before the deeper sweep (run
+        15f37f5871b5). Single-candidate and legacy-index callers keep the short-hop path; a deep
+        single candidate still earns the existing sweep below. Neither path assumes a gesture
+        landed.
 
         A CANDIDATE REFUSAL NEVER ERASES BANKED EVIDENCE.  When the phone provably did not move,
         the walk can stop and hand the measured entry back, making its evidence result no worse
@@ -8172,6 +8210,34 @@ class AndroidDriver(DatingAppDriver):
         if entry_anchor is None:
             return base_evidence, None
         evidence = dict(base_evidence)
+        if isinstance(index, ItemIndex) and remaining >= 2 and len(candidates) >= 2:
+            if should_stop is not None and should_stop():
+                self._dbg_still_photo_walk_candidate(candidates[0], "stop")
+                self._record_still_photo_dwell_walk_stop(
+                    next_heart_ordinal=candidates[0],
+                    remaining_heart_ordinals=candidates,
+                    remaining_candidate_slots=remaining,
+                    phase="before_candidate_navigation",
+                )
+                return evidence, entry_anchor
+            sweep_candidates = candidates[:max_attempts]
+            self._dbg_still_photo_progressive_sweep(
+                "started",
+                candidate_page_hearts=sweep_candidates,
+                candidate_slots=remaining,
+                reason="multiple_candidates_share_return",
+            )
+            return self._still_photo_dwell_progressive_sweep(
+                evidence,
+                candidate_ordinals=sweep_candidates,
+                candidate_slots=remaining,
+                index=index,
+                mute_screen=mute_screen,
+                should_stop=should_stop,
+                entry_anchor=entry_anchor,
+                calibration=calibration,
+                returned_refusals_used=0,
+            )
         for attempt, heart_ordinal in enumerate(candidates):
             if hops_run >= remaining or attempt >= max_attempts:
                 break
@@ -8774,13 +8840,10 @@ class AndroidDriver(DatingAppDriver):
         calibration,
         returned_refusals_used: int,
     ) -> tuple[dict, _MeasuredItemAnchor | None]:
-        """Visit deep photo candidates monotonically, then make one measured return.
+        """Visit photo candidates monotonically, then make one measured return.
 
-        The short-hop walk above deliberately returns to the enumeration entry after each card.
-        That is cheap and well exercised while a card fits the re-attach probe's four-leg return
-        envelope.  It becomes quadratic on the earlier half of a normal Hinge profile, however,
-        and the old response was to skip those candidates entirely.  This helper is the bounded
-        continuation for that case.
+        Multiple remaining candidates share this walk from the outset. A single deep candidate
+        also uses it when the short-hop return envelope cannot cover the climb.
 
         ``navigate_to_item`` still performs every identity, count, extent, and shift check.  The
         only changed input is its zero point: after a successful hop, ``target.page_offset`` plus
@@ -8847,7 +8910,7 @@ class AndroidDriver(DatingAppDriver):
             attempted.append(heart_ordinal)
             self._note_capture_progress(
                 f"verifying photo item {len(base_evidence) + hops_run + 1} of "
-                f"{self.still_photo_dwell_candidates}: moving through the deep-item sweep"
+                f"{self.still_photo_dwell_candidates}: moving to the next item"
             )
             candidate_started_at = time.monotonic() if self._dbg is not None else None
             navigation_started_at = candidate_started_at
@@ -9222,11 +9285,18 @@ class AndroidDriver(DatingAppDriver):
                 )
 
         return_started_at = time.monotonic() if self._dbg is not None else None
-        returned_anchor = self._return_to_entry_from_measured_position(
-            origin_anchor,
-            frame=current_anchor.frame,
-            terminal_shift_px=current_anchor.page_shift_px
-            - origin_anchor.page_shift_px,
+        # No completed hop replaced this object: only gesture-free skips/refusals (whose
+        # screen verdict and input counter already passed the rescue gate) can retain it.
+        # Preserve that untouched entry instead of spending another zero-distance comparison.
+        returned_anchor = (
+            origin_anchor
+            if current_anchor is origin_anchor
+            else self._return_to_entry_from_measured_position(
+                origin_anchor,
+                frame=current_anchor.frame,
+                terminal_shift_px=current_anchor.page_shift_px
+                - origin_anchor.page_shift_px,
+            )
         )
         return_s = (
             time.monotonic() - return_started_at
@@ -10943,7 +11013,8 @@ class AndroidDriver(DatingAppDriver):
             # named frames first, then let the stride spend what is left on breadth.
             if len(local_candidates) > 8:
                 cited = sorted({i for i in cited_local if 0 <= i < len(source)})
-                chosen = {i for i in dict.fromkeys(priority_local) if i in set(cited)}
+                priority = [i for i in dict.fromkeys(priority_local) if i in set(cited)]
+                chosen = set(priority[:8])
                 budget = max(0, 8 - len(chosen))
                 # The stride still spans the whole pool including both endpoints; it just runs
                 # over the slots the named frames left it.
@@ -11065,6 +11136,26 @@ class AndroidDriver(DatingAppDriver):
                     "local_frame_index": local,
                     "source_frame_index": original,
                     "offset_px": offsets[local] if local < len(offsets) else None,
+                    # A repair probe also rejects frame-local segmentation failures. Geometry
+                    # alone cannot explain that rollback, especially for frames outside the
+                    # eight-image dossier. None means an older/test index did not carry the
+                    # evidence; an empty list affirmatively records a clean segmentation.
+                    "segmentation_failures": (
+                        [
+                            str(failure)[:1000]
+                            for failure in tuple(segmentation.failures)[:16]
+                        ]
+                        if getattr(segmentation, "failures", None) is not None
+                        else None
+                    ),
+                    "unassigned_hearts": (
+                        [
+                            list(heart)
+                            for heart in tuple(segmentation.unassigned_hearts)[:12]
+                        ]
+                        if getattr(segmentation, "unassigned_hearts", None) is not None
+                        else None
+                    ),
                     "animation_marker": (
                         animation_markers[local]
                         if local < len(animation_markers)
@@ -11240,20 +11331,28 @@ class AndroidDriver(DatingAppDriver):
             )
             pair_evidence = [pair_record(local) for local in range(pair_count)]
             sidecar = f"item_index_refused_{dossier_id}_evidence.json"
+            evidence = {
+                "schema_version": 7,
+                "reason": str(reason)[:2000],
+                "runtime": runtime_provenance,
+                "frames": records,
+                "all_frame_geometry": all_frame_geometry,
+                "pair_evidence": pair_evidence,
+            }
+            # The finished index carries the caller's top assertion, but does not retain the
+            # separate confirmed-signal retry input. Do not infer that input from a failure or
+            # label its absence False: that would invent provenance for the refused fold.
+            at_scroll_top = getattr(index, "at_scroll_top", None)
+            if isinstance(at_scroll_top, bool):
+                evidence["at_scroll_top"] = at_scroll_top
             # The image payload is capped at eight frames; structured geometry is bounded by the
-            # capture ceiling, 64 blocks/runs per frame, and 12 hearts/block.  Reason remains
-            # short because the full prose is already in actions.jsonl.
+            # capture ceiling, 64 blocks/runs per frame, 12 hearts/block, 12 unassigned hearts,
+            # and 16 frame failures of at most 1000 characters. Reason remains short because
+            # the full prose is already in actions.jsonl.
             atomic_write_private_text(
                 debug_dir / sidecar,
                 json.dumps(
-                    {
-                        "schema_version": 7,
-                        "reason": str(reason)[:2000],
-                        "runtime": runtime_provenance,
-                        "frames": records,
-                        "all_frame_geometry": all_frame_geometry,
-                        "pair_evidence": pair_evidence,
-                    },
+                    evidence,
                     separators=(",", ":"),
                 ),
                 parent=debug_dir,
@@ -11316,6 +11415,7 @@ class AndroidDriver(DatingAppDriver):
 
         cited_local: list[int] = []
         named_in_reason: list[int] = []
+        named_pairs: list[tuple[int, int]] = []
         # Refusal prose is deliberately human-readable, so retain every frame it names.  Pair
         # ledger fields cover older/newer message wording that does not say "frame".
         for text in (reason, *tuple(getattr(index, "failures", ()) or ())):
@@ -11326,6 +11426,8 @@ class AndroidDriver(DatingAppDriver):
                     named_in_reason.extend(
                         int(v) for v in match.groups() if v is not None
                     )
+                    if match.group(2) is not None:
+                        named_pairs.append((int(match.group(1)), int(match.group(2))))
         cited_local.extend(named_in_reason)
         if failing_pair is not None:
             cited_local.extend((failing_pair, failing_pair + 1))
@@ -11342,29 +11444,39 @@ class AndroidDriver(DatingAppDriver):
                         range(max(0, pair[0] - 1), min(len(photos), pair[1] + 3))
                     )
         runtime_provenance = _item_index_runtime_provenance()
+        # Keep both endpoints of later refused pairs before spending slots on neighbouring
+        # frames. A stride over the whole pool dropped frame 14 of the second 14→15 refusal
+        # in run 15f37f5871b5, leaving that video transition impossible to replay.
+        priority_local: list[int] = []
+        priority_pairs = (
+            [(failing_pair, failing_pair + 1)] if failing_pair is not None else []
+        )
+        priority_pairs.extend(tuple(rec["pair"]) for rec in refused_pairs)
+        priority_pairs.extend(named_pairs)
+        for pair in priority_pairs:
+            endpoints = list(dict.fromkeys((*priority_local, *pair)))
+            if len(endpoints) <= 8:
+                priority_local = endpoints
         sidecar, evidence_frames = self._save_item_index_refusal_evidence(
             photos,
             reason,
             index,
             cited_local,
             runtime_provenance,
-            # The pair the refusal is named after outranks breadth when the eight-image cap
-            # has to drop something.  A malformed/legacy index that yields no failing pair still
-            # has the frames its own prose names, which is the same evidence by a weaker route.
-            priority_local=(
-                (failing_pair, failing_pair + 1)
-                if failing_pair is not None
-                else tuple(named_in_reason[:2])
-            ),
+            priority_local=tuple(priority_local or named_in_reason[:2]),
         )
 
         before = after = None
+        source = self._item_index_source_indices(index, photos)
         if (
             failing_pair is not None
             and 0 <= failing_pair
-            and failing_pair + 1 < len(photos)
+            and failing_pair + 1 < len(source)
         ):
-            before, after = photos[failing_pair], photos[failing_pair + 1]
+            before, after = (
+                photos[source[failing_pair]],
+                photos[source[failing_pair + 1]],
+            )
         elif index is None and photos:
             # An exception has no pair ledger.  Save the capture boundaries rather than claiming
             # they are the failing pair; it is still the evidence that existed at failure time.

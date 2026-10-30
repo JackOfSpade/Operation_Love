@@ -933,7 +933,19 @@ class Worker(threading.Thread):
         except ActionCancelled:
             self.stop_event.set()
         except DriverClosed as exc:
-            print(f"{exc}; Stopping run so buffered data can be saved.")
+            # The inner loop has normally already closed the driver. Publish without
+            # repainting its overlay, and retain the cause through the supervisor's
+            # saving/stopped restamps instead of looking like an operator Stop.
+            self._publish_status(
+                state="stopped",
+                detail=None,
+                stop_reason=_terminal_error_summary(exc),
+                stop_kind="driver_closed",
+            )
+            print(
+                f"Run {self.run_id}: {self.app}: {exc}; "
+                "Stopping run so buffered data can be saved."
+            )
             self.stop_event.set()
         except Exception as exc:  # noqa: BLE001
             print(

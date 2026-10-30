@@ -9335,8 +9335,8 @@ def test_return_refusal_highlights_measured_motion_against_requested_direction()
 
 def test_unmeasurable_intended_item_is_not_reported_as_a_wrong_item_tap():
     shape = bugreport._verify_mismatch_shape(
-        {'item': 6, 'nearest': 4, 'distance': None}
+        {"item": 6, "nearest": 4, "distance": None}
     )
-    assert 'intended item could not be measured' in shape
-    assert 'does not establish' in shape
-    assert 'real targeting miss' not in shape
+    assert "intended item could not be measured" in shape
+    assert "does not establish" in shape
+    assert "real targeting miss" not in shape

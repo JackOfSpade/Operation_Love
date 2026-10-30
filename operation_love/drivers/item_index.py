@@ -461,7 +461,7 @@ _END_TAIL_GAP_PX = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
 # indexer decision path and splitter.  Those values distinguish "the current source replays
 # cleanly" from "the long-lived
 # worker was still executing an older indexer" without trusting the working tree alone.
-ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v26"
+ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v28"
 
 
 # =====================================================================================
@@ -2077,6 +2077,112 @@ def _unique_markers_by_frame(
     }
 
 
+def _video_card_has_left_band(
+    before: FrameSegmentation,
+    after: FrameSegmentation,
+    raw: ShiftEstimate,
+    video_block: Block,
+    *,
+    max_step_px: int,
+) -> bool:
+    """Retire a track only when independent page pixels carry its whole card above the band.
+
+    A later video may start a new track after this proof. A broken correspondence never may:
+    the last observed bottom must leave under an ordinary raw quorum, every supporting strip
+    must come from below the video, and exact top, bottom and heart layout must corroborate it.
+    """
+    if (
+        raw.status != SHIFT_MEASURED
+        or raw.delta_px is None
+        or raw.agreeing < 3
+        or not 0 < raw.delta_px <= max_step_px
+        or not video_block.bottom.observed
+        or video_block.bottom.y - raw.delta_px > after.band[0]
+    ):
+        return False
+    supporters = tuple(
+        strip
+        for strip in raw.strips
+        if strip.state == STRIP_MATCHED
+        and strip.delta_px is not None
+        and abs(strip.delta_px - raw.delta_px) <= _AGREEMENT_TOLERANCE_PX
+    )
+    if len(supporters) < 3 or any(strip.y0 < video_block.y1 for strip in supporters):
+        return False
+    exact_kinds = {
+        kind
+        for kind, delta in _structural_landmarks(before, after, max_step_px=max_step_px)
+        if delta == raw.delta_px
+    }
+    return exact_kinds == {"top", "bottom", "heart"}
+
+
+def _contradictory_video_marker_delta(
+    before: FrameSegmentation,
+    after: FrameSegmentation,
+    raw: ShiftEstimate,
+    *,
+    before_marker: VideoMuteMarker | None,
+    after_marker: VideoMuteMarker | None,
+    extent_tolerance_px: int,
+    max_step_px: int,
+) -> int | None:
+    """Veto a video-only measured majority when app geometry and outside pixels contradict it.
+
+    This grants no repair authority. Two contained controls, their observed card tops and both
+    sides of the upper canonical gutter must move exactly together. An exact NCC witness must
+    cross that upper boundary, while every supporter of the raw answer lies inside the video.
+    A full three-kind layout/strip proof is still required by the existing override machinery
+    before a different displacement may be accepted.
+    """
+    if raw.status != SHIFT_MEASURED or raw.delta_px is None or raw.agreeing < 3:
+        return None
+    delta = _direct_marker_bridge_delta(
+        before,
+        after,
+        before_marker=before_marker,
+        after_marker=after_marker,
+        max_step_px=max_step_px,
+    )
+    if delta is None or abs(delta - raw.delta_px) <= extent_tolerance_px:
+        return None
+    left = _marker_block(before, before_marker)
+    right = _marker_block(after, after_marker)
+    if (
+        left is None
+        or right is None
+        or not left.top.observed
+        or not right.top.observed
+        or left.y0 - right.y0 != delta
+        or not any(
+            before_top == left.y0 and after_top == right.y0
+            for _before_bottom, before_top, _after_bottom, after_top in _shared_gutter_witnesses(
+                before, after, delta
+            )
+        )
+    ):
+        return None
+    matched = tuple(
+        strip
+        for strip in raw.strips
+        if strip.state == STRIP_MATCHED and strip.delta_px is not None
+    )
+    majority = tuple(
+        strip
+        for strip in matched
+        if abs(strip.delta_px - raw.delta_px) <= _AGREEMENT_TOLERANCE_PX
+    )
+    if len(majority) < 3 or not all(
+        left.y0 <= strip.y0 and strip.y1 <= left.y1 for strip in majority
+    ):
+        return None
+    if not any(
+        strip.delta_px == delta and strip.y0 < left.y0 < strip.y1 for strip in matched
+    ):
+        return None
+    return delta
+
+
 def _video_track_deltas(
     segmentations: Sequence[FrameSegmentation],
     shifts: Sequence[ShiftEstimate],
@@ -2122,13 +2228,14 @@ def _video_track_deltas(
             seeded[frame_index] = block
             marker_blocks[frame_index] = marker
 
-    # All later mute hits are observations that must agree with this one physical trajectory;
-    # they are not independent repair seeds.  Otherwise a broken middle link could silently
-    # start a second "same video" track below it.
+    # Later mute hits must agree with the active trajectory. Only a separately proved complete
+    # card exit may retire it and permit a genuinely different video to start another track.
+    # A broken middle link still cannot silently seed a second "same video" below it.
     first_seed = min(seeded, default=None)
     active: set[tuple[int, object]] = (
         {(first_seed, seeded[first_seed])} if first_seed is not None else set()
     )
+    retired = False
     # Frame indices whose active card has just been proved to leave the band.  Exactly the next
     # unmarked pair may re-establish the lower coordinate space with `_video_exit_bridge_delta`.
     # The set is intentionally not propagated: allowing a general post-video grammar would make
@@ -2139,7 +2246,16 @@ def _video_track_deltas(
         zip(segmentations[:-1], segmentations[1:], shifts, strict=True)
     ):
         current = tuple(block for frame, block in active if frame == pair_index)
+        if not current and retired and pair_index in seeded:
+            current = (seeded[pair_index],)
+            active.add((pair_index, current[0]))
+            retired = False
         if not current:
+            continue
+        if len(current) == 1 and _video_card_has_left_band(
+            before_seg, after_seg, raw, current[0], max_step_px=max_step_px
+        ):
+            retired = True
             continue
         before_marker = marker_blocks.get(
             pair_index
@@ -3973,6 +4089,56 @@ _SCROLL_TOP_CORNER_FAILURE_PREFIX = (
 )
 
 
+def _confirmed_top_retry_resolves_failures(
+    blocks: Sequence[IndexedBlock],
+    failures: Sequence[str],
+    *,
+    at_scroll_top: bool,
+) -> bool:
+    """Recognise only the corner gate and its dependent leading-header uncertainty.
+
+    The driver uses this to decide whether independent filter-chip proof can license a retry.
+    The repair probe uses the SAME predicate to retain correspondence evidence while that top
+    gate is unresolved. This is never top confirmation: the ordinary final fold still refuses.
+    An uncertain block elsewhere, or any additional contradiction, remains a repair veto.
+    """
+    try:
+        failures = tuple(failures or ())
+        blocks = tuple(blocks)
+        first = blocks[0]
+        if (
+            not at_scroll_top
+            or not isinstance(first.page_y0, int)
+            or not isinstance(first.page_y1, int)
+            or first.page_y1 <= first.page_y0
+        ):
+            return False
+        corner_failures = tuple(
+            failure
+            for failure in failures
+            if isinstance(failure, str)
+            and failure.startswith(_SCROLL_TOP_CORNER_FAILURE_PREFIX)
+        )
+        if len(failures) == 1:
+            return len(corner_failures) == 1
+        if len(failures) != 2 or len(corner_failures) != 1:
+            return False
+        if (
+            len(blocks) <= 1
+            or first.kind != ITEM_PARTIAL
+            or first.hearts
+            or first.complete
+        ):
+            return False
+        dependent_uncertainty = (
+            f"the block at page rows {first.page_y0}..{first.page_y1} "
+            + _UNCERTAIN_HEART_NOTE
+        )
+        return sum(failure == dependent_uncertainty for failure in failures) == 1
+    except (AttributeError, IndexError, TypeError):
+        return False
+
+
 def _scroll_top_evidence(blocks: Sequence[IndexedBlock], band_y0: int) -> str | None:
     """Whether this capture's own geometry corroborates the caller's `at_scroll_top` assertion.
 
@@ -4738,7 +4904,12 @@ def build_item_index(
     `_same_pair_marker_exit_bridge`. The pair immediately following a proved overlay exit may
     instead rejoin the lower cards only with
     three identical strip values and the tracked card's exact heart displacement. Every form is
-    only a proposal until a complete page rebuild succeeds. When the legacy boolean sequence is
+    only a proposal until a complete page rebuild succeeds. A later video may start another
+    track only after the previous card's observed bottom has entirely left the band on a raw
+    quorum from lower page pixels, corroborated by exact top/bottom/heart motion. A broken
+    trajectory cannot re-seed. A contradictory video-only measured majority may also veto an
+    index through `_contradictory_video_marker_delta`; that refusal grants no repair authority.
+    When the legacy boolean sequence is
     omitted, its frame-aligned compatibility view is derived from these rows; an explicitly
     supplied boolean sequence remains authoritative.
 
@@ -4904,6 +5075,7 @@ def build_item_index(
 
     def repair_probe_failed(candidate_shifts: Sequence[ShiftEstimate]) -> bool:
         probe_offsets, probe_chain_failures = _frame_offsets(candidate_shifts)
+        probe_blocks: tuple[IndexedBlock, ...] = ()
         probe_failures: tuple[str, ...] = ()
         if not probe_chain_failures and not any(seg.failures for seg in segmentations):
             # Probe the same page the final fold would see — structurally, via `_fold_page`, not
@@ -4911,7 +5083,7 @@ def build_item_index(
             # header or a repeatedly proven near-gutter merge reject a repair before the final
             # assembly gets to apply those existing fail-closed rules.
             (
-                _probe_blocks,
+                probe_blocks,
                 probe_failures,
                 _probe_notes,
                 _probe_island_notes,
@@ -4935,6 +5107,14 @@ def build_item_index(
             for failure in probe_failures
             if not failure.startswith(_SCROLL_TOP_ASSERTION_FAILURE_PREFIX)
         )
+        # Missing item 1's corner also prevents the leading name panel from becoming chrome,
+        # producing a second, dependent hidden-heart diagnosis. Treat precisely the driver's
+        # existing retry shape as the same unresolved top gate; do not erase a sound video
+        # bridge and hide that retry behind its raw NCC refusal (2026-10-28, +503px pair).
+        if _confirmed_top_retry_resolves_failures(
+            probe_blocks, probe_failures, at_scroll_top=at_scroll_top
+        ):
+            repair_contradictions = ()
         return bool(
             probe_chain_failures
             or repair_contradictions
@@ -5309,6 +5489,26 @@ def build_item_index(
         # two-heart block, a heart bounded by nothing). They are carried forward with the frame
         # number attached rather than restated.
         failures.extend(f"frame {i}: {reason}" for reason in seg.failures)
+
+    markers_by_frame = _unique_markers_by_frame(mute_markers, len(segmentations))
+    for i, effective in enumerate(shifts):
+        contradiction = _contradictory_video_marker_delta(
+            segmentations[i],
+            segmentations[i + 1],
+            effective,
+            before_marker=markers_by_frame.get(i),
+            after_marker=markers_by_frame.get(i + 1),
+            extent_tolerance_px=extent_tolerance_px,
+            max_step_px=pitch_max_step_px,
+        )
+        if contradiction is not None:
+            failures.append(
+                f"frames {i} and {i + 1} have contradictory page motion: measured "
+                f"{effective.delta_px:+d}px was supported only inside a video, while its "
+                "positioned controls, observed top, upper canonical gutter and an exact "
+                f"boundary NCC witness all move {contradiction:+d}px; no replacement "
+                "displacement has passed the complete repair proof"
+            )
 
     offsets, chain_failures = _frame_offsets(shifts)
     failures.extend(chain_failures)

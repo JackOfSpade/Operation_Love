@@ -3969,6 +3969,10 @@ def test_item_index_refusal_saves_at_most_eight_source_mapped_frames_and_bounded
     } <= set(frame)
     assert frame["animation_marker"] is None
     assert frame["video_mute_markers"] == []
+    assert frame["segmentation_failures"] is None
+    assert frame["unassigned_hearts"] is None
+    assert "at_scroll_top" not in sidecar
+    assert "scroll_top_signal_confirmed" not in sidecar
     assert frame["blocks"][0]["frame_rows"] == [20, 60]
     assert frame["blocks"][0]["page_rows"] == [20, 60]
     assert frame["blocks"][0]["complete"] is True
@@ -3978,6 +3982,82 @@ def test_item_index_refusal_saves_at_most_eight_source_mapped_frames_and_bounded
         "frame_rows": [[900, 42]],
         "page_rows": [[900, 42]],
     }
+
+
+@pytest.mark.parametrize("at_scroll_top", (False, True))
+def test_item_index_refusal_keeps_frame_failures_outside_the_image_dossier(
+    tmp_path, at_scroll_top
+):
+    """A complete repair probe reads every segmentation, even when only eight PNGs survive.
+
+    The Jackie refusal's sidecar preserved the exact local +503px proof but omitted the
+    frame-local failures that could still reject its complete-page probe. Preserve those
+    diagnostics for every frame, including a frame the image cap excludes, with no guessed
+    confirmed-top provenance.
+    """
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="item-index-frame-failures")
+    photos = [f"frame-{i}".encode() for i in range(11)]
+    frames = tuple(
+        SimpleNamespace(
+            blocks=(),
+            runs=(),
+            failures=() if i == 0 else (f"frame {i}: heart was not bounded",),
+            unassigned_hearts=() if i == 0 else ((939, 1000 + i),),
+        )
+        for i in range(len(photos))
+    )
+    index = SimpleNamespace(
+        frames=frames,
+        source_frame_indices=tuple(range(len(photos))),
+        offsets=(0,) * len(photos),
+        shifts=(),
+        failures=(),
+        at_scroll_top=at_scroll_top,
+    )
+    sidecar, saved = drv._save_item_index_refusal_evidence(
+        photos, "synthetic refused fold", index, list(range(11)), {}
+    )
+    assert sidecar is not None
+    assert len(saved) == 8
+    payload = json.loads((drv._dbg.dir / sidecar).read_text())
+    assert payload["at_scroll_top"] is at_scroll_top
+    assert "scroll_top_signal_confirmed" not in payload
+    saved_indices = {record["local_frame_index"] for record in payload["frames"]}
+    omitted = next(i for i in range(len(photos)) if i not in saved_indices)
+    geometry = payload["all_frame_geometry"]
+    assert geometry[0]["segmentation_failures"] == []
+    assert geometry[0]["unassigned_hearts"] == []
+    assert geometry[omitted]["segmentation_failures"] == [
+        f"frame {omitted}: heart was not bounded"
+    ]
+    assert geometry[omitted]["unassigned_hearts"] == [[939, 1000 + omitted]]
+
+
+def test_item_index_refusal_bounds_frame_failure_and_unassigned_heart_diagnostics(
+    tmp_path,
+):
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="item-index-frame-failure-bounds")
+    failures = tuple(f"failure {i}: " + "x" * 2000 for i in range(20))
+    hearts = tuple((939, 1000 + i) for i in range(20))
+    segmentation = SimpleNamespace(
+        blocks=(), runs=(), failures=failures, unassigned_hearts=hearts
+    )
+    index = SimpleNamespace(
+        frames=(segmentation,), source_frame_indices=(0,), offsets=(0,), shifts=()
+    )
+    sidecar, _saved = drv._save_item_index_refusal_evidence(
+        [b"frame 0"], "synthetic refused fold", index, [0], {}
+    )
+    assert sidecar is not None
+    payload = json.loads((drv._dbg.dir / sidecar).read_text())
+    geometry = payload["all_frame_geometry"][0]
+    assert geometry["segmentation_failures"] == [
+        failure[:1000] for failure in failures[:16]
+    ]
+    assert geometry["unassigned_hearts"] == [list(heart) for heart in hearts[:12]]
+    assert "at_scroll_top" not in payload
 
 
 def test_item_index_refusal_sidecar_carries_the_unanchored_strip_evidence_bugreport_reads(
@@ -5540,7 +5620,8 @@ def test_the_dossier_keeps_the_failing_pairs_own_frames_when_the_cap_has_to_drop
     both frames of the pair itself were dropped. The one refusal the dossier is named after was
     the one thing it could not be used to replay.
 
-    Breadth is still spent on the rest of the pool; it just no longer outranks the evidence."""
+    Refused pairs spend the cap before neighbouring context frames. Breadth uses any slots
+    left after retaining complete failing transitions."""
     drv = _drv(WorldAdb())
     drv._dbg = HingeDebugLog(str(tmp_path), run_id="item-index-failing-pair")
 
@@ -5602,8 +5683,8 @@ def test_the_dossier_keeps_the_failing_pairs_own_frames_when_the_cap_has_to_drop
     assert 36 in numbers and 37 in numbers, (
         f"the failing pair's own frames were dropped again: {numbers}"
     )
-    assert numbers[0] == 35 and numbers[-1] == 63, (
-        "breadth still reaches both endpoints"
+    assert numbers == [36, 37, 43, 44, 46, 47, 53, 54], (
+        "complete refused pairs must outrank neighbouring frames when all eight slots are used"
     )
     for name in saved:
         assert (drv._dbg.dir / name).exists()
@@ -5644,6 +5725,16 @@ def _full_read_capture():
     assert index.at_scroll_top
     assert index.translation == (1, 2, 3, 4)
     return index, frames
+
+
+class _LegacyItemIndex:
+    """Expose the established index interface without typed rebasing provenance."""
+
+    def __init__(self, index):
+        self._index = index
+
+    def __getattr__(self, name):
+        return getattr(self._index, name)
 
 
 def test_the_full_read_fixture_leaves_only_the_last_card_free():
@@ -6679,15 +6770,10 @@ def test_a_mid_navigation_stop_names_only_the_cards_still_inside_the_limit(
         ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1]), still_photo_dwell_candidates=3
     )
     drv._dbg = HingeDebugLog(str(tmp_path), run_id=f"stop-slots-{through_the_sweep}")
-    if through_the_sweep:
-        # The same return-budget stub `_sweep_world` uses: a 1px required climb against a 0px
-        # legacy cap puts every candidate outside the four-leg envelope and switches the walk
-        # into the progressive sweep. Without it the identical scenario stays on short hops.
-        monkeypatch.setattr(
-            drv,
-            "_still_photo_dwell_walk_return_budget",
-            lambda _index, _model_index: (1, 0, 1),
-        )
+    if not through_the_sweep:
+        # Multiple typed candidates now share a measured sweep immediately. An untyped legacy
+        # index retains the short-hop handler, whose separate Stop arithmetic still needs coverage.
+        index = _LegacyItemIndex(index)
     stopped = {"now": False}
 
     def cancels_mid_climb(*_args, **_kwargs):
@@ -8135,10 +8221,13 @@ def test_an_unreachable_run_of_cards_is_bounded_and_never_scans_the_whole_index(
 def test_an_unverified_return_abandons_the_walk_and_stops_further_candidates(
     monkeypatch, installed_still_photo_bound
 ):
-    """Candidate 1 (heart 3) is proved; ITS OWN return to the entry cannot be verified; the walk
-    stops there -- candidate 2 (heart 2), nearer the entry than the one that failed and the card
-    that would ordinarily be tried next, is never attempted at all."""
+    """A legacy short hop whose own return is unverified stops before the next candidate.
+
+    Typed multi-candidate indexes instead share one final return, covered by the sweep's
+    unverified-cleanup tests.
+    """
     index, frames = _full_read_capture()
+    index = _LegacyItemIndex(index)
     adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
     drv = _drv(adb, still_photo_dwell_candidates=4)
     navigate_calls: list[int] = []
@@ -8170,11 +8259,13 @@ def test_an_unverified_return_abandons_the_walk_and_stops_further_candidates(
 def test_should_stop_between_candidates_stops_the_walk_with_no_partial_candidate(
     monkeypatch, installed_still_photo_bound
 ):
-    """`should_stop` becomes true only once candidate 1 (heart 3) has FULLY completed -- proof
-    and a verified return -- so its own evidence is untouched by the stop; candidate 2 (heart 2)
-    is then never attempted at all (caught at the walk's own top-of-loop check, before a single
-    navigate_to_item call)."""
+    """A legacy short-hop Stop after proof and return preserves that candidate's evidence.
+
+    No later candidate may start after the Stop. The shared sweep's Stop between measured
+    proofs is covered separately.
+    """
     index, frames = _full_read_capture()
+    index = _LegacyItemIndex(index)
     adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
     drv = _drv(adb, still_photo_dwell_candidates=4)
     state = {"returns": 0}

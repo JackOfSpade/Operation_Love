@@ -424,7 +424,6 @@ def test_a_spacing_that_leaves_exactly_one_delivery_safe_step_reports_it():
         assert scroll_step.step_overshoot(plan, plan.step_px + 13) is not None
 
 
-
 def test_a_spacing_taller_than_the_whole_ratio_window_does_not_collapse_onto_the_ceiling():
     """The other collapse the clamp produced, and the rarer one. Past ~1396px of card spacing even
     `_STEP_RATIO_MIN` of it exceeds `_MAX_STEP_PX`, so the old clamp delivered 363px on 87% of
@@ -488,7 +487,9 @@ def test_the_commanded_step_keeps_the_full_headroom_for_every_drawable_target():
             frac = max(frac_lo, frac - 1.0 / _H)
             commanded = scroll_step.step_px_for_frac(frac, _H)
         assert commanded <= draw_cap_px, target_px
-        assert plan.bound_px - commanded >= scroll_step._ENUMERATION_DELIVERY_HEADROOM_PX, (
+        assert (
+            plan.bound_px - commanded >= scroll_step._ENUMERATION_DELIVERY_HEADROOM_PX
+        ), (
             f"target {target_px} commands {commanded}px, leaving less than the reserved "
             f"{scroll_step._ENUMERATION_DELIVERY_HEADROOM_PX}px under the {plan.bound_px}px bound"
         )

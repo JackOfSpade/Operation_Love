@@ -1,51 +1,45 @@
-import os
-import sys
+"""Archived beauty-model wrapper; paths and scores are validated before publication."""
 
-from ComboLoss.main.inference import FacialBeautyPredictor
+import argparse
+import math
+from pathlib import Path
 
 
 def main(cropped_image_path, uncropped_image_path):
-    # Define paths
-    pretrained_model_path = "./ComboLoss/models/ComboNet_SCUTFBP5500.pth"
+    from ComboLoss.main.inference import FacialBeautyPredictor
 
-    # Load the pretrained model
-    predictor = FacialBeautyPredictor(pretrained_model_path)
-
-    if cropped_image_path is not None:
-        # Get the beauty score using the new model
-        beauty_score = predictor.infer(cropped_image_path)
-        print(f"Beauty Score: {beauty_score['beauty']:.2f}")
-
-        # Split the path into directory, base name, and extension
-        directory = os.path.dirname(cropped_image_path)
-        base_name, ext = os.path.splitext(os.path.basename(cropped_image_path))
-        parent_directory = os.path.dirname(uncropped_image_path)
-        parent_base_name, parent_ext = os.path.splitext(
-            os.path.basename(uncropped_image_path)
-        )
-
-        # Define the new file name with the additional information
-        new_base_name = f"{base_name}  Beauty Score {beauty_score['beauty']:.2f}"
-        new_parent_base_name = (
-            f"{parent_base_name}  Beauty Score {beauty_score['beauty']:.2f}"
-        )
-
-        # Create the new file path by joining the directory, new base name, and extension
-        new_file_path = os.path.join(directory, new_base_name + ext)
-        new_file_path = new_file_path.replace("\\", "/")
-        parent_new_file_path = os.path.join(
-            parent_directory, new_parent_base_name + parent_ext
-        )
-        parent_new_file_path = parent_new_file_path.replace("\\", "/")
-
-        # Rename the file
-        os.rename(cropped_image_path, new_file_path)
-        print(f"{new_file_path}")
-        os.rename(uncropped_image_path, parent_new_file_path)
-        print(f"{parent_new_file_path}")
+    cropped, original = Path(cropped_image_path), Path(uncropped_image_path)
+    if (
+        not cropped.is_file()
+        or not original.is_file()
+        or cropped.resolve() == original.resolve()
+    ):
+        raise ValueError("analysis requires two distinct existing image files")
+    model_path = (
+        Path(__file__).resolve().parent / "ComboLoss/models/ComboNet_SCUTFBP5500.pth"
+    )
+    predictor = FacialBeautyPredictor(str(model_path))
+    score = float(predictor.infer(str(cropped))["beauty"])
+    if not math.isfinite(score) or not 1 <= score <= 5:
+        raise ValueError("beauty model returned a score outside [1, 5]")
+    new_cropped = cropped.with_stem(f"{cropped.stem}  Beauty Score {score:.2f}")
+    new_original = original.with_stem(f"{original.stem}  Beauty Score {score:.2f}")
+    if new_cropped.exists() or new_original.exists():
+        raise FileExistsError("annotated image destination already exists")
+    cropped.rename(new_cropped)
+    try:
+        original.rename(new_original)
+    except OSError:
+        new_cropped.rename(cropped)
+        raise
+    print(f"Beauty Score: {score:.2f}")
+    print(new_cropped.as_posix())
+    print(new_original.as_posix())
 
 
 if __name__ == "__main__":
-    cropped_image_path = sys.argv[1]
-    uncropped_image_path = sys.argv[2]
-    main(cropped_image_path, uncropped_image_path)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("cropped_image_path")
+    parser.add_argument("uncropped_image_path")
+    args = parser.parse_args()
+    main(args.cropped_image_path, args.uncropped_image_path)

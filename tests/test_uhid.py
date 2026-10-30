@@ -8,8 +8,10 @@ behaviour is verified on-device separately.
 
 import functools
 import json
+import os
 import random
 import shlex
+import threading
 
 import pytest
 
@@ -503,8 +505,8 @@ class _FakePersistentPopen:
         self.stdin = _FakePersistentStdin(
             fail_after=stdin_fail_after, raise_type=stdin_raise_type
         )
-        # The real persistent PTY command deliberately discards its unused output.  Mirroring
-        # Popen's `None` stream attributes here makes close() exercise that production shape.
+        # Most tests exercise lifecycle and delivery without a real output descriptor. The
+        # bounded output reader has separate real-pipe tests below.
         self.stdout = None
         self.stderr = None
         self._alive = start_alive
@@ -559,8 +561,8 @@ def test_persistent_open_registers_once_and_gestures_never_reregister(monkeypatc
     assert len(_FakePersistentPopen.instances) == 1
     proc = _FakePersistentPopen.instances[0]
     assert proc.kwargs["stdin"] is uhid.subprocess.PIPE
-    assert proc.kwargs["stdout"] is uhid.subprocess.DEVNULL
-    assert proc.kwargs["stderr"] is uhid.subprocess.DEVNULL
+    assert proc.kwargs["stdout"] is uhid.subprocess.PIPE
+    assert proc.kwargs["stderr"] is uhid.subprocess.STDOUT
     open_cmds = _cmds_from_strings(proc.stdin.written)
     assert [c["command"] for c in open_cmds] == ["register", "delay"]
     assert open_cmds[0]["descriptor"] and open_cmds[0]["name"] == drv.name
@@ -877,3 +879,169 @@ def test_persistent_close_swallows_kill_and_wait_failures(monkeypatch):
 
     drv.close()  # must not raise despite kill()/wait() both blowing up
     assert drv._proc is None  # still torn down from this object's point of view
+
+
+def test_persistent_output_drains_more_than_pipe_capacity_and_keeps_a_bounded_tail():
+    read_fd, write_fd = os.pipe()
+    stream = os.fdopen(read_fd, "rb")
+    capture = uhid._PersistentOutput(stream)
+    completed = threading.Event()
+
+    def emit():
+        try:
+            # No newline: a readline-based collector would retain this whole unbounded line.
+            payload = b"x" * (1024 * 1024) + b"\nadb: error: device offline\n"
+            while payload:
+                written = os.write(write_fd, payload)
+                payload = payload[written:]
+        finally:
+            os.close(write_fd)
+            completed.set()
+
+    producer = threading.Thread(target=emit, daemon=True)
+    producer.start()
+    try:
+        assert completed.wait(3), "process output blocked on a full pipe"
+        capture._thread.join(timeout=3)
+        assert not capture._thread.is_alive()
+        assert len(capture._tail) <= 8192
+        assert "adb: error: device offline" in capture.summary(exited=True)
+    finally:
+        stream.close()
+
+
+def test_persistent_output_excludes_pty_command_echo_from_error_context():
+    capture = uhid._PersistentOutput(None)
+    capture._tail = (
+        b'{"id": 1, "command": "report", "report": [1, 2, 3]}\r\n'
+        b"hid: could not create device\r\n"
+    )
+    assert capture.summary() == "hid: could not create device"
+
+
+def test_persistent_output_stop_ends_reader_even_with_a_silent_open_writer():
+    read_fd, write_fd = os.pipe()
+    stream = os.fdopen(read_fd, "rb")
+    capture = uhid._PersistentOutput(stream)
+    try:
+        capture.stop()
+        assert not capture._thread.is_alive()
+        # The writer still has an open reader: stopping did not rely on pipe EOF or close.
+        assert os.write(write_fd, b"still open") == len(b"still open")
+    finally:
+        os.close(write_fd)
+        stream.close()
+
+
+def test_persistent_dead_session_reports_exit_context_without_another_write(
+    monkeypatch,
+):
+    _quiet_sleep(monkeypatch)
+    monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
+    drv = PersistentUhidTouch(FakeAdb())
+    drv.open()
+    proc = _FakePersistentPopen.instances[0]
+    drv.tap(540, 1200)
+    before = len(proc.stdin.written)
+    proc._alive = False
+    drv._output._tail = b"adb: error: device offline\n"
+
+    with pytest.raises(DriverClosed) as exc:
+        drv.tap(540, 1200)
+
+    message = str(exc.value)
+    assert "hid/adb exit code=1" in message
+    assert "gestures_submitted=1" in message
+    assert "session_age_s=" in message
+    assert "since_last_submission_s=" in message
+    assert "device offline" in message
+    assert len(proc.stdin.written) == before
+    assert len(_FakePersistentPopen.instances) == 1
+
+
+def test_persistent_sticky_death_retains_original_delivery_failure(monkeypatch):
+    _quiet_sleep(monkeypatch)
+    monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
+    drv = PersistentUhidTouch(FakeAdb())
+    drv.open()
+    proc = _FakePersistentPopen.instances[0]
+    proc.stdin._fail_after = 0
+
+    with pytest.raises(DriverClosed, match="stdin write"):
+        drv.tap(540, 1200)
+    with pytest.raises(DriverClosed, match="first failure:.*stdin write"):
+        drv.tap(540, 1200)
+
+
+def test_persistent_explicit_reopen_retires_previous_session_failure(monkeypatch):
+    _quiet_sleep(monkeypatch)
+    monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
+    drv = PersistentUhidTouch(FakeAdb())
+    drv.open()
+    _FakePersistentPopen.instances[0].stdin._fail_after = 0
+    with pytest.raises(DriverClosed, match="stdin write"):
+        drv.tap(540, 1200)
+    drv.close()
+
+    drv.open()
+    drv.tap(540, 1200)
+
+    assert len(_FakePersistentPopen.instances) == 2
+    assert drv._gestures_submitted == 1
+    assert drv._failure_reason is None
+
+
+def test_persistent_explicit_reopen_reaps_an_exited_session_first(monkeypatch):
+    _quiet_sleep(monkeypatch)
+    monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
+    drv = PersistentUhidTouch(FakeAdb())
+    drv.open()
+    old_proc = _FakePersistentPopen.instances[0]
+    old_output = drv._output
+    old_proc._alive = False
+
+    drv.open()
+
+    assert old_proc.kill_called and old_proc.wait_calls == 1
+    assert old_proc.stdin.closed
+    assert old_output._stopped.is_set()
+    assert len(_FakePersistentPopen.instances) == 2
+    assert not drv._output._stopped.is_set()
+    drv.tap(540, 1200)
+
+
+def test_persistent_old_close_cannot_stop_a_concurrently_opened_session_reader(
+    monkeypatch,
+):
+    _quiet_sleep(monkeypatch)
+    monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
+    drv = PersistentUhidTouch(FakeAdb())
+    drv.open()
+    old_proc = _FakePersistentPopen.instances[0]
+    old_output = drv._output
+    closing = threading.Event()
+    finish_close = threading.Event()
+
+    def delayed_kill():
+        closing.set()
+        assert finish_close.wait(3)
+        old_proc._alive = False
+
+    old_proc.kill = delayed_kill
+    closer = threading.Thread(target=drv.close, daemon=True)
+    closer.start()
+    try:
+        assert closing.wait(3)
+        # close() has detached the old process and is waiting outside the driver lock.
+        drv.open()
+        new_output = drv._output
+        new_proc = drv._proc
+    finally:
+        finish_close.set()
+        closer.join(timeout=3)
+
+    assert not closer.is_alive()
+    assert old_output._stopped.is_set()
+    assert not new_output._stopped.is_set()
+    assert drv._proc is new_proc
+    drv.tap(540, 1200)

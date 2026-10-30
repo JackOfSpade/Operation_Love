@@ -5,10 +5,14 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 
 def _legacy_module(monkeypatch):
     """Load the standalone legacy script without requiring its optional requests extra."""
-    fake_requests = types.SimpleNamespace()
+    fake_requests = types.SimpleNamespace(
+        RequestException=type("RequestException", (Exception,), {})
+    )
     monkeypatch.setitem(sys.modules, "requests", fake_requests)
     path = (
         Path(__file__).parents[1]
@@ -70,3 +74,81 @@ def test_legacy_zip_helper_alias_keeps_existing_callers_compatible(monkeypatch):
     module, _requests = _legacy_module(monkeypatch)
 
     assert module.get_zip_code is module.get_public_postal_token
+
+
+def test_legacy_zip_lookup_falls_back_after_transport_failure(monkeypatch):
+    module, fake_requests = _legacy_module(monkeypatch)
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append((url, kwargs))
+        if len(calls) == 1:
+            raise fake_requests.RequestException("primary service is unavailable")
+        return types.SimpleNamespace(
+            status_code=200,
+            json=lambda: {
+                "results": [
+                    {
+                        "address_components": [
+                            {"types": ["postal_code"], "long_name": "02139"}
+                        ]
+                    }
+                ]
+            },
+        )
+
+    fake_requests.get = get
+    assert module.get_zip_code("Cambridge", "Massachusetts", "api-key") == "02139"
+    assert len(calls) == 2
+    assert all(kwargs["timeout"] == module._REQUEST_TIMEOUT_S for _, kwargs in calls)
+    assert calls[1][1]["params"] == {"address": "Cambridge,MA", "key": "api-key"}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        [],
+        "error",
+        {"places": None},
+        {"places": [None]},
+        {"results": [None, {"address_components": [None, {}]}]},
+    ],
+)
+def test_legacy_zip_lookup_tolerates_malformed_payloads(monkeypatch, payload):
+    module, fake_requests = _legacy_module(monkeypatch)
+    fake_requests.get = lambda *_args, **_kwargs: types.SimpleNamespace(
+        status_code=200, json=lambda: payload
+    )
+    assert module.get_zip_code("Cambridge", "Massachusetts", "api-key") == "Not Found"
+
+
+@pytest.mark.parametrize("failure", ["network", "json"])
+def test_legacy_zip_lookup_failure_keeps_credentials_out_of_output(
+    monkeypatch, capsys, failure
+):
+    module, fake_requests = _legacy_module(monkeypatch)
+
+    def fail():
+        error = fake_requests.RequestException if failure == "network" else ValueError
+        raise error("private-api-key must remain private")
+
+    fake_requests.get = lambda *_args, **_kwargs: (
+        fail()
+        if failure == "network"
+        else types.SimpleNamespace(status_code=200, json=fail)
+    )
+    assert (
+        module.get_zip_code("Cambridge", "Massachusetts", "private-api-key")
+        == "Not Found"
+    )
+    assert capsys.readouterr() == ("", "")
+
+
+def test_legacy_zip_lookup_uses_a_valid_postal_code_after_malformed_places(monkeypatch):
+    module, fake_requests = _legacy_module(monkeypatch)
+    fake_requests.get = lambda *_args, **_kwargs: types.SimpleNamespace(
+        status_code=200,
+        json=lambda: {"places": [None, {}, {"post code": "02139"}]},
+    )
+    assert module.get_zip_code("Cambridge", "Massachusetts", "") == "02139"

@@ -98,6 +98,34 @@ def test_an_unloadable_config_still_runs_the_command_so_it_reports_the_real_prob
     assert ran == [1]
 
 
+def test_an_unloadable_config_cannot_bypass_a_running_device_owner(tmp_path, capsys):
+    ran = []
+    with sup.exclusive_android_device(None, "hinge"):
+        with pytest.raises(SystemExit) as exit_info:
+            _devicelock.run_holding_the_device(
+                str(tmp_path / "missing.yaml"), lambda: ran.append("unlocked")
+            )
+
+    assert exit_info.value.code == 1
+    assert ran == []
+    assert "already in use" in capsys.readouterr().err
+
+
+def test_an_unloadable_config_runs_under_the_shared_lock(tmp_path):
+    def command():
+        with pytest.raises(RuntimeError, match="already in use"):
+            with sup.exclusive_android_device(None, "hinge"):
+                pytest.fail("command ran without the device lock")
+        return "configuration can be reported safely"
+
+    assert (
+        _devicelock.run_holding_the_device(str(tmp_path / "missing.yaml"), command)
+        == "configuration can be reported safely"
+    )
+    with sup.exclusive_android_device(None, "hinge"):
+        pass  # the failed-config command also releases its lock
+
+
 def test_a_config_free_acquisition_contends_with_a_configured_run_on_the_same_lock(
     tmp_path, capsys
 ):

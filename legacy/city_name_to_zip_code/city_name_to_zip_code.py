@@ -92,29 +92,57 @@ def get_public_postal_token(city, state, google_api_key):
 
     # Try Zippopotam.us API first
     base_url_zippopotamus = f"https://api.zippopotam.us/us/{state_abbr}/{city}"
-    response = requests.get(base_url_zippopotamus, timeout=_REQUEST_TIMEOUT_S)
-    if response.status_code == 200:
-        result = response.json()
-        if "places" in result and len(result["places"]) > 0:
-            return _public_postal_code(result["places"][0].get("post code"))
+    result = _lookup_json(base_url_zippopotamus)
+    places = result.get("places")
+    if isinstance(places, list):
+        for place in places:
+            if isinstance(place, dict):
+                token = _public_postal_code(place.get("post code"))
+                if token != "Not Found":
+                    return token
 
     # If Zippopotam.us API fails, try Google Maps Geocoding API
     if not google_api_key:
         return "Not Found"
     google_maps_url = "https://maps.googleapis.com/maps/api/geocode/json"
-    response = requests.get(
+    result = _lookup_json(
         google_maps_url,
         params={"address": f"{city},{state_abbr}", "key": google_api_key},
-        timeout=_REQUEST_TIMEOUT_S,
     )
-    if response.status_code == 200:
-        result = response.json()
-        if "results" in result and len(result["results"]) > 0:
-            for component in result["results"][0]["address_components"]:
-                if "postal_code" in component["types"]:
-                    return _public_postal_code(component.get("long_name"))
+    matches = result.get("results")
+    if isinstance(matches, list):
+        for match in matches:
+            components = (
+                match.get("address_components") if isinstance(match, dict) else None
+            )
+            if not isinstance(components, list):
+                continue
+            for component in components:
+                if not isinstance(component, dict):
+                    continue
+                types = component.get("types")
+                if isinstance(types, list) and "postal_code" in types:
+                    token = _public_postal_code(component.get("long_name"))
+                    if token != "Not Found":
+                        return token
 
     return "Not Found"
+
+
+def _lookup_json(url, **kwargs):
+    """Treat transport failures and malformed responses as an unavailable lookup.
+
+    A failed primary service must still allow the fallback and the rest of a batch to run.
+    Keep request exceptions private: their URLs can contain the Google API key.
+    """
+    try:
+        response = requests.get(url, timeout=_REQUEST_TIMEOUT_S, **kwargs)
+        if response.status_code != 200:
+            return {}
+        value = response.json()
+    except (requests.RequestException, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 # Preserve the legacy helper name for callers while the batch output uses the

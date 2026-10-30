@@ -2425,7 +2425,9 @@ def navigate_to_item(
                 pair_before=frames[i],
                 measurement={
                     "schema_version": 3,
-                    "code": NAV_SCROLL_STALLED if climb_px <= 0 else NAV_SCROLL_OVERSHOT,
+                    "code": NAV_SCROLL_STALLED
+                    if climb_px <= 0
+                    else NAV_SCROLL_OVERSHOT,
                     "frame_index": i + 1,
                     "planned": {
                         "step_px": step.step_px,

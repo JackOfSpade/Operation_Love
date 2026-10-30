@@ -80,6 +80,13 @@ def configured_modules() -> list[str]:
     return sorted(modules)
 
 
+def _pytest_environment() -> dict[str, str]:
+    # The driver owns full-suite selection. Inherited -k/--deselect options can
+    # shrink collection and execution together, producing matching manifests that
+    # silently omit tests even though reconciliation succeeds.
+    return {**os.environ, "PYTEST_ADDOPTS": ""}
+
+
 def collected_nodeids(modules: list[str]) -> list[str]:
     command = [
         sys.executable,
@@ -94,6 +101,7 @@ def collected_nodeids(modules: list[str]) -> list[str]:
     result = subprocess.run(
         command,
         cwd=REPO_ROOT,
+        env=_pytest_environment(),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -130,7 +138,7 @@ def run_test_process(nodeids: list[str], report_path: Path) -> tuple[int, dict |
             *nodeids,
         ],
         cwd=REPO_ROOT,
-        env={**os.environ, "CI_PYTEST_REPORT_PATH": str(report_path)},
+        env={**_pytest_environment(), "CI_PYTEST_REPORT_PATH": str(report_path)},
         check=False,
     )
     report = (

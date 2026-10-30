@@ -2110,6 +2110,396 @@ def test_positioned_mute_card_track_bridges_one_directly_proved_video_pair(
     assert "direct marker bridge" in index.shifts[2].reason
 
 
+@pytest.mark.parametrize(
+    "additional_fault", (None, "fold", "uncertainty", "segmentation")
+)
+def test_video_bridge_preserves_dependent_top_failures_for_confirmed_retry(
+    monkeypatch, additional_fault
+):
+    """A sound bridge must expose the top retry, without accepting an unconfirmed index.
+
+    Geometry reproduces the reported +503px failure: a leading heartless header cannot become
+    chrome until item 1's missing corner is independently resolved. Its dependent uncertainty
+    must not roll the bridge back to a raw refusal. No profile pixels are used here.
+    """
+    frames = [f"synthetic frame {i}".encode() for i in range(4)]
+    scrolls = (0, 473, 946, 1449)
+    segmentations = []
+    for i, offset in enumerate(scrolls):
+        blocks = []
+        if i == 0:
+            blocks.append(
+                _seg_block(
+                    334,
+                    642,
+                    kind=segment.BLOCK_PARTIAL,
+                    top=_edge(334, segment.EDGE_BACKGROUND_RUN, observed=False),
+                    bottom=_edge(642, segment.EDGE_GUTTER, observed=True),
+                )
+            )
+        for top, bottom, heart in (
+            (697, 1671, 1581),
+            (1724, 2833, 2743),
+            (2886, 3860, 3770),
+        ):
+            y0, y1 = max(_BAND0, top - offset), min(_BAND1, bottom - offset)
+            if y0 >= y1:
+                continue
+            complete = top - offset >= _BAND0 and bottom - offset <= _BAND1
+            hearts = ((_HEART_CX, heart - offset),) if y0 <= heart - offset < y1 else ()
+            blocks.append(
+                _seg_block(
+                    y0,
+                    y1,
+                    kind=segment.BLOCK_SELECTABLE
+                    if complete
+                    else segment.BLOCK_PARTIAL,
+                    top=_edge(
+                        y0,
+                        segment.EDGE_GUTTER
+                        if top - offset >= _BAND0
+                        else segment.EDGE_BAND_EDGE,
+                        observed=top - offset >= _BAND0,
+                    ),
+                    bottom=_edge(
+                        y1,
+                        segment.EDGE_GUTTER
+                        if bottom - offset <= _BAND1
+                        else segment.EDGE_BAND_EDGE,
+                        observed=bottom - offset <= _BAND1,
+                    ),
+                    hearts=hearts,
+                )
+            )
+        segmentation = _segmentation(blocks)
+        if additional_fault == "segmentation" and i == 0:
+            segmentation = dataclasses.replace(
+                segmentation, failures=("independent segmentation fault",)
+            )
+        segmentations.append(segmentation)
+
+    base = _all_weak_video_exit_shift()
+    measured = _shift_with_votes(
+        base, [473] * 3, status=frameshift.SHIFT_MEASURED, delta=473
+    )
+    refused = dataclasses.replace(
+        _shift_with_votes(
+            base, [503, 503, -66, 249], status=frameshift.SHIFT_NO_CONSENSUS
+        ),
+        confidence=0.0,
+        agreeing=0,
+        dissenting=4,
+        eligible=4,
+    )
+    raw_shifts = (measured, measured, refused)
+    monkeypatch.setattr(
+        item_index,
+        "segment_frame",
+        lambda frame, **_kw: segmentations[frames.index(frame)],
+    )
+    monkeypatch.setattr(
+        item_index,
+        "estimate_shift",
+        lambda before, _after, **_kw: raw_shifts[frames.index(before)],
+    )
+    if additional_fault in ("fold", "uncertainty"):
+        real_fold = item_index._fold_page
+
+        def contradictory_fold(*args, **kwargs):
+            blocks, failures, *notes = real_fold(*args, **kwargs)
+            fault = (
+                "the block at page rows 3000..3100 " + item_index._UNCERTAIN_HEART_NOTE
+                if additional_fault == "uncertainty"
+                else "independent card-boundary contradiction"
+            )
+            return blocks, (*failures, fault), *notes
+
+        monkeypatch.setattr(item_index, "_fold_page", contradictory_fold)
+    kwargs = dict(
+        content_band=_CONTENT_BAND,
+        like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        at_scroll_top=True,
+        identity_band=None,
+        video_mute_markers=tuple(
+            item_index.VideoMuteMarker(i, 106, 1912 - offset, 1.0)
+            for i, offset in enumerate(scrolls)
+        ),
+        _allow_frame_omission_recovery=False,
+    )
+    index = item_index.build_item_index(frames, **kwargs)
+
+    assert not index.usable
+    if additional_fault:
+        assert index.shifts == raw_shifts
+        assert index.layout_repaired_shifts == ()
+        assert not hinge.HingeDriver._index_needs_confirmed_top_retry(index)
+        return
+    assert index.offsets == scrolls
+    assert len(index.failures) == 2
+    assert index.failures[0].startswith(item_index._SCROLL_TOP_CORNER_FAILURE_PREFIX)
+    assert (
+        index.failures[1]
+        == "the block at page rows 334..642 " + item_index._UNCERTAIN_HEART_NOTE
+    )
+    assert index.layout_repaired_shifts == ((2, refused),)
+    assert hinge.HingeDriver._index_needs_confirmed_top_retry(index)
+    confirmed = item_index.build_item_index(
+        frames, scroll_top_signal_confirmed=True, **kwargs
+    )
+    assert confirmed.usable, confirmed.failures
+    assert confirmed.offsets == scrolls
+    assert confirmed.translation == (1, 2)
+    assert confirmed.blocks[0].kind == item_index.ITEM_LEADING_CHROME
+    assert confirmed.repair_provenance == index.repair_provenance
+
+
+@pytest.mark.parametrize(
+    "break_gate", (None, "unobserved_bottom", "broken_link", "missing_layout", "fold")
+)
+def test_a_later_video_may_start_a_track_only_after_the_first_card_provably_exits(
+    monkeypatch, break_gate
+):
+    """Two separate video cards may each need a repair in one otherwise measured read.
+
+    The first video leaves on pair 2, measured entirely from lower page content. A later video
+    appears on frame 4 and needs its own direct-marker repair. Merely losing the first track,
+    or projecting an unobserved bottom, must not license that second seed.
+    """
+    scrolls = tuple(_STEP * i for i in range(8))
+    frames = [_frame(scroll) for scroll in scrolls]
+    real_shift = item_index.estimate_shift
+
+    def video_pairs(before, after, **kwargs):
+        pair = frames.index(before)
+        raw = real_shift(before, after, **kwargs)
+        if pair == 4 or (break_gate == "broken_link" and pair == 1):
+            return _shift_with_votes(raw, [321], status=frameshift.SHIFT_NO_CONSENSUS)
+        return raw
+
+    monkeypatch.setattr(item_index, "estimate_shift", video_pairs)
+    if break_gate == "unobserved_bottom":
+        real_segment = item_index.segment_frame
+
+        def unknown_bottom(frame, **kwargs):
+            segmentation = real_segment(frame, **kwargs)
+            if frame != frames[2]:
+                return segmentation
+            first, *rest = segmentation.blocks
+            first = dataclasses.replace(
+                first, bottom=dataclasses.replace(first.bottom, observed=False)
+            )
+            return dataclasses.replace(segmentation, blocks=(first, *rest))
+
+        monkeypatch.setattr(item_index, "segment_frame", unknown_bottom)
+    elif break_gate == "missing_layout":
+        real_landmarks = item_index._structural_landmarks
+        digest = hashlib.sha256(frames[2]).hexdigest()
+        monkeypatch.setattr(
+            item_index,
+            "_structural_landmarks",
+            lambda before, after, **kw: tuple(
+                landmark
+                for landmark in real_landmarks(before, after, **kw)
+                if before.frame_digest != digest or landmark[0] != "heart"
+            ),
+        )
+    elif break_gate == "fold":
+        real_fold = item_index._fold_page
+
+        def contradictory_fold(*args, **kwargs):
+            blocks, failures, *notes = real_fold(*args, **kwargs)
+            return blocks, (*failures, "independent page contradiction"), *notes
+
+        monkeypatch.setattr(item_index, "_fold_page", contradictory_fold)
+    markers = (
+        item_index.VideoMuteMarker(0, 106, _CARD1[1] + 53, 1.0),
+        *(
+            item_index.VideoMuteMarker(i, 106, _CARD3[1] + 53 - scrolls[i], 1.0)
+            for i in (4, 5, 6)
+        ),
+    )
+    index = item_index.build_item_index(
+        frames,
+        content_band=_CONTENT_BAND,
+        like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        at_scroll_top=True,
+        identity_band=None,
+        video_mute_markers=markers,
+        _allow_frame_omission_recovery=False,
+    )
+    if break_gate:
+        assert not index.usable
+        assert index.layout_repaired_shifts == ()
+        return
+    assert index.usable, index.failures
+    assert index.offsets == scrolls
+    assert index.translation == (1, 2, 3, 4)
+    assert [
+        (i, raw.status, raw.delta_px) for i, raw in index.layout_repaired_shifts
+    ] == [(4, frameshift.SHIFT_NO_CONSENSUS, None)]
+    assert "direct marker bridge" in index.shifts[4].reason
+
+
+def _video_top_contradiction_geometry():
+    """Synthetic geometry for a video whose visible top moves +512, with its heart clipped."""
+
+    def block(y0, y1, *, top=True, bottom=True, hearts=()):
+        return _seg_block(
+            y0,
+            y1,
+            kind=segment.BLOCK_PARTIAL
+            if not (top and bottom)
+            else segment.BLOCK_SELECTABLE
+            if hearts
+            else segment.BLOCK_CONTEXT,
+            top=_edge(
+                y0, segment.EDGE_GUTTER if top else segment.EDGE_BAND_EDGE, observed=top
+            ),
+            bottom=_edge(
+                y1,
+                segment.EDGE_GUTTER if bottom else segment.EDGE_BAND_EDGE,
+                observed=bottom,
+            ),
+            hearts=hearts,
+        )
+
+    before = _segmentation((block(651, 866), block(919, 2100, bottom=False)))
+    after = _segmentation(
+        (
+            block(300, 354, top=False),
+            block(407, 1868, hearts=((939, 1778),)),
+            block(1921, 2100, bottom=False),
+        )
+    )
+    base = _all_weak_video_exit_shift()
+    strips = list(base.strips)
+    for i, (y0, vote) in enumerate(((868, 512), (1294, 442), (1436, 442), (1578, 443))):
+        strips[i] = dataclasses.replace(
+            strips[i],
+            y0=y0,
+            y1=y0 + 96,
+            state=frameshift.STRIP_MATCHED,
+            delta_px=vote,
+            score=0.99,
+        )
+    raw = dataclasses.replace(
+        base,
+        strips=tuple(strips),
+        status=frameshift.SHIFT_MEASURED,
+        delta_px=442,
+        consensus_px=442,
+        agreeing=3,
+        dissenting=1,
+        eligible=4,
+        confidence=0.75,
+    )
+    markers = (
+        item_index.VideoMuteMarker(0, 106, 972, 1.0),
+        item_index.VideoMuteMarker(1, 106, 460, 1.0),
+    )
+    return before, after, raw, markers
+
+
+@pytest.mark.parametrize(
+    "break_gate",
+    (
+        None,
+        "marker",
+        "gutter",
+        "outside_majority",
+        "boundary_witness",
+        "boundary_delta",
+        "tolerable",
+    ),
+)
+def test_video_geometry_vetoes_a_confident_wrong_majority_without_granting_a_repair(
+    break_gate,
+):
+    before, after, raw, markers = _video_top_contradiction_geometry()
+    if break_gate == "marker":
+        markers = (markers[0], None)
+    elif break_gate == "gutter":
+        first, video = before.blocks
+        before = dataclasses.replace(
+            before,
+            blocks=(
+                dataclasses.replace(
+                    first, bottom=dataclasses.replace(first.bottom, observed=False)
+                ),
+                video,
+            ),
+        )
+    elif break_gate in ("outside_majority", "boundary_witness"):
+        strips = list(raw.strips)
+        i = 1 if break_gate == "outside_majority" else 0
+        strips[i] = dataclasses.replace(strips[i], y0=800, y1=896)
+        raw = dataclasses.replace(raw, strips=tuple(strips))
+    elif break_gate == "boundary_delta":
+        strips = list(raw.strips)
+        strips[0] = dataclasses.replace(strips[0], delta_px=511)
+        raw = dataclasses.replace(raw, strips=tuple(strips))
+    elif break_gate == "tolerable":
+        raw = dataclasses.replace(raw, delta_px=505)
+    assert item_index._contradictory_video_marker_delta(
+        before,
+        after,
+        raw,
+        before_marker=markers[0],
+        after_marker=markers[1],
+        extent_tolerance_px=8,
+        max_step_px=697,
+    ) == (512 if break_gate is None else None)
+    # The old stronger override remains deliberately unavailable: this pair never saw a
+    # corresponding video heart before the scroll, so the veto cannot invent a replacement.
+    assert (
+        item_index._video_majority_override_delta(
+            before,
+            after,
+            raw,
+            video_block=before.blocks[-1],
+            max_step_px=697,
+        )
+        is None
+    )
+
+
+def test_video_geometry_contradiction_is_an_index_failure_even_if_the_fold_misses_it(
+    monkeypatch,
+):
+    before, after, raw, markers = _video_top_contradiction_geometry()
+    frames = (b"synthetic before", b"synthetic after")
+    monkeypatch.setattr(
+        item_index,
+        "segment_frame",
+        lambda frame, **kw: before if frame == frames[0] else after,
+    )
+    monkeypatch.setattr(item_index, "estimate_shift", lambda *a, **kw: raw)
+    monkeypatch.setattr(
+        item_index, "_fold_page", lambda *a, **kw: ((), (), (), (), set())
+    )
+    kwargs = dict(
+        content_band=_CONTENT_BAND,
+        like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        at_scroll_top=True,
+        identity_band=None,
+        video_mute_markers=markers,
+        _allow_frame_omission_recovery=False,
+    )
+    index = item_index.build_item_index(frames, **kwargs)
+    assert not index.usable
+    assert len(index.failures) == 1
+    assert "measured +442px" in index.failures[0] and "move +512px" in index.failures[0]
+    assert index.shifts == (raw,)
+    assert index.layout_repaired_shifts == ()
+    monkeypatch.setattr(
+        item_index, "_contradictory_video_marker_delta", lambda *a, **kw: None
+    )
+    assert item_index.build_item_index(frames, **kwargs).usable
+
+
 @pytest.mark.parametrize("break_gate", (None, "still_visible", "weak_cluster"))
 def test_positioned_mute_card_track_reconnects_one_boundary_below_a_video(
     monkeypatch, break_gate

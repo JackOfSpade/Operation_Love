@@ -42,11 +42,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import statistics
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from operation_love.numeric import finite_real_as_float
 
 _ITERATION_ACTION = "capture_iteration_timing"
 _SUMMARY_ACTION = "capture_timing_summary"
@@ -143,7 +144,9 @@ def parse_actions_jsonl(path: Path) -> list[dict]:
                 continue
             try:
                 record = json.loads(line)
-            except json.JSONDecodeError:
+            except (ValueError, RecursionError):
+                # The JSON decoder also raises these for an oversized integer or deeply
+                # nested value. One malformed row must not hide later valid timing data.
                 continue
             if isinstance(record, dict):
                 records.append(record)
@@ -171,8 +174,7 @@ def _finite_timing_value(value: object) -> float | None:
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    numeric = float(value)
-    return numeric if math.isfinite(numeric) else None
+    return finite_real_as_float(value)
 
 
 def _summarize(

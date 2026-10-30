@@ -319,7 +319,7 @@ def test_training_checkpoint_rejects_a_decompressed_png_with_an_invalid_row_filt
 def test_png_validator_rejects_large_inflated_rasters_before_decompression():
     """A compact zlib bomb must not allocate the 240 MB permitted by pixel dimensions alone."""
     with patch(
-        "operation_love.training_actions.zlib.decompressobj",
+        "operation_love.image_validation.zlib.decompressobj",
         side_effect=AssertionError("large raster must not be decompressed"),
     ):
         assert not _valid_png_idat(

@@ -40,8 +40,10 @@ edge case it does not directly prove.
 from __future__ import annotations
 
 import json
+import os
 import random
 import secrets
+import select
 import shlex
 import subprocess
 import threading
@@ -539,6 +541,63 @@ _DEFAULT_CLOSE_TIMEOUT_S = 3.0
 _PERSISTENT_POLL_INTERVAL_S = 0.03
 
 
+class _PersistentOutput:
+    """Drain PTY echo/errors continuously, retaining only a bounded diagnostic tail.
+
+    An unread PIPE can deadlock gesture delivery. DEVNULL avoided that deadlock but also
+    erased the only explanation for a remote hid/adb exit. The reader never takes the
+    gesture lock, and its retained bytes are bounded even when a child emits no newlines.
+    """
+
+    def __init__(self, stream):
+        self._tail = b""
+        self._lock = threading.Lock()
+        self._stopped = threading.Event()
+        self._thread = None
+        if stream is not None:
+            try:
+                fd = stream.fileno()
+            except (AttributeError, OSError, ValueError):
+                return  # descriptor-free test transports have no process output to drain
+            self._thread = threading.Thread(
+                target=self._drain, args=(fd,), daemon=True, name="uhid-output"
+            )
+            self._thread.start()
+
+    def _drain(self, fd: int) -> None:
+        try:
+            while not self._stopped.is_set():
+                readable, _, _ = select.select([fd], [], [], 0.03)
+                if self._stopped.is_set():
+                    break
+                if not readable:
+                    continue
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    break
+                with self._lock:
+                    self._tail = (self._tail + chunk)[-8192:]
+        except (OSError, ValueError):
+            pass  # stream teardown cannot change delivery or shutdown semantics
+
+    def stop(self) -> None:
+        self._stopped.set()
+        if self._thread is not None:
+            self._thread.join(timeout=0.1)
+
+    def summary(self, *, exited: bool = False) -> str:
+        if exited and self._thread is not None:
+            # Allow the reader to collect the final exit message, with a strict local bound.
+            self._thread.join(timeout=0.1)
+        with self._lock:
+            tail = self._tail.decode("utf-8", errors="replace")
+        # PTY echo is mostly our JSON report stream. It is not failure evidence and would
+        # otherwise hide a short adb/hid error among thousands of touch coordinates.
+        lines = [line for line in tail.splitlines() if '"command":' not in line]
+        text = " | ".join(lines)[-1200:]
+        return "".join(char if char.isprintable() else " " for char in text)
+
+
 class PersistentUhidTouch(_UhidGestureBase):
     """A non-root virtual touchscreen held open for an ENTIRE SESSION instead of being
     re-registered per gesture. Same public surface as UhidTouch (open/close/tap/swipe/
@@ -651,6 +710,11 @@ class PersistentUhidTouch(_UhidGestureBase):
         # flag makes "mark the session dead" an explicit, immediate fact rather than
         # something inferred a moment later from a `poll()` call that might still race.
         self._dead = False
+        self._failure_reason: str | None = None
+        self._output = _PersistentOutput(None)
+        self._opened_at: float | None = None
+        self._last_submission_at: float | None = None
+        self._gestures_submitted = 0
 
     # --- lifecycle -------------------------------------------------------
     def open(self) -> None:
@@ -694,6 +758,10 @@ class PersistentUhidTouch(_UhidGestureBase):
                     "close() it first -- calling open() again here would silently orphan "
                     "the existing `adb shell hid` process and its registered virtual device"
                 )
+            if self._proc is not None:
+                # Explicitly reopening an exited session still owns its old pipes/reader.
+                # Reap those before replacing their references with the new process.
+                self._kill_proc_best_effort()
 
             argv = [self.adb.adb_path]
             if self.adb.serial:
@@ -706,20 +774,19 @@ class PersistentUhidTouch(_UhidGestureBase):
             try:
                 # text=True, not bytes: every payload this transport sends is a JSON command
                 # line, so `json.dumps(...)` writes straight to stdin with no per-call
-                # `.encode()`.  stdout/stderr are deliberately DEVNULL: this is a write-only
-                # protocol, and `adb shell -tt` may echo PTY input.  Keeping either output on
-                # an unread PIPE lets that echo fill the host pipe and block a later stdin
-                # write forever, making Stop unable to reach the worker.  There is no output
-                # contract to preserve or parse here, so DEVNULL is safer than reader threads.
+                # `.encode()`. Drain merged output immediately: PTY echo must never fill an
+                # unread PIPE, but a bounded error tail is needed to diagnose a session death.
                 self._proc = subprocess.Popen(
                     argv,
                     stdin=subprocess.PIPE,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
                 )
-            except OSError as exc:
+                self._output = _PersistentOutput(self._proc.stdout)
+            except (OSError, RuntimeError) as exc:
+                self._kill_proc_best_effort()
                 raise UhidUnavailable(
                     f"could not spawn persistent `adb shell hid`: {exc}"
                 ) from exc
@@ -745,7 +812,8 @@ class PersistentUhidTouch(_UhidGestureBase):
                     f"persistent `hid` process rejected registration: {exc}"
                 ) from exc
             time.sleep(enumerate_ms / 1000.0)
-            if self._proc.poll() is not None:
+            returncode = self._proc.poll()
+            if returncode is not None:
                 # Confirmed dead during its OWN enumeration window: this device/PTY approach
                 # did not work this session. (See the class docstring's ps/PID caveat:
                 # detecting death via `poll()` at all rests on an inference this class never
@@ -754,10 +822,19 @@ class PersistentUhidTouch(_UhidGestureBase):
                 # `self._proc = None`: the process is already dead, so `kill()` here is a
                 # harmless no-op, but `wait()` still needs to run to reap it rather than
                 # leaving a zombie behind.
+                details = self._process_details(returncode)
                 self._kill_proc_best_effort()
                 raise UhidUnavailable(
-                    "persistent `hid` process exited during registration/enumeration"
+                    "persistent `hid` process exited during registration/enumeration; "
+                    + details
                 )
+            # An explicit close/open starts a new session; a prior session's sticky
+            # delivery failure must not poison the successfully registered replacement.
+            self._dead = False
+            self._failure_reason = None
+            self._opened_at = time.monotonic()
+            self._last_submission_at = None
+            self._gestures_submitted = 0
 
     def close(self) -> None:
         """Best-effort, idempotent teardown -- mirrors UhidTouch.close()'s
@@ -787,6 +864,7 @@ class PersistentUhidTouch(_UhidGestureBase):
         while already holding the lock)."""
         with self._lock:
             proc, self._proc = self._proc, None
+            output = self._output
         if proc is None:
             return
         try:
@@ -794,6 +872,7 @@ class PersistentUhidTouch(_UhidGestureBase):
             proc.wait(timeout=self.close_timeout)
         except Exception:  # noqa: BLE001 — best-effort teardown must not mask the real outcome
             pass
+        output.stop()
         for stream in (proc.stdin, proc.stdout, proc.stderr):
             try:
                 if stream is not None:
@@ -814,6 +893,33 @@ class PersistentUhidTouch(_UhidGestureBase):
         for c in cmds:
             proc.stdin.write(json.dumps(c) + "\n")
         proc.stdin.flush()
+
+    def _process_details(self, returncode=None) -> str:
+        if returncode is None:
+            returncode = getattr(self._proc, "returncode", None)
+        parts = [
+            f"hid/adb exit code={returncode if returncode is not None else 'unknown'}"
+        ]
+        now = time.monotonic()
+        if self._opened_at is not None:
+            parts.append(f"session_age_s={now - self._opened_at:.1f}")
+        parts.append(f"gestures_submitted={self._gestures_submitted}")
+        if self._last_submission_at is not None:
+            parts.append(
+                f"since_last_submission_s={now - self._last_submission_at:.1f}"
+            )
+        output = self._output.summary(exited=returncode is not None)
+        parts.append(f"process_output={output or '(none captured)'}")
+        return "; ".join(parts)
+
+    def _closed_error(self, reason: str, returncode=None) -> DriverClosed:
+        previous = self._failure_reason
+        if previous is None:
+            self._failure_reason = reason
+        self._dead = True
+        if previous is not None and previous != reason:
+            reason += f"; first failure: {previous}"
+        return DriverClosed(reason + "; " + self._process_details(returncode))
 
     def _run_gesture(self, samples, *, _timing: dict[str, float] | None = None) -> None:
         """Deliver one gesture's report/delay stream through the already-open persistent
@@ -843,12 +949,16 @@ class PersistentUhidTouch(_UhidGestureBase):
             # SESSION either. `self._dead` catches the write-failure case `poll()` alone
             # might not yet reflect (see its own comment in __init__); `poll() is not None`
             # catches everything else.
-            if self._dead or self._proc is None or self._proc.poll() is not None:
-                raise DriverClosed(
+            returncode = (
+                self._proc.poll() if not self._dead and self._proc is not None else None
+            )
+            if self._dead or self._proc is None or returncode is not None:
+                raise self._closed_error(
                     "persistent UHID session is not open (or has already died); refusing "
                     "to silently reopen or resend -- a dead session must be recreated by "
                     "the caller, and a gesture already handed to this transport is never "
-                    "replayed against a new one"
+                    "replayed against a new one",
+                    returncode,
                 )
             with _time_bucket(_timing, "uhid_persistent_script_build_s"):
                 w, h = self.adb.screen_size()
@@ -862,6 +972,8 @@ class PersistentUhidTouch(_UhidGestureBase):
                 )
             try:
                 with _time_bucket(_timing, "uhid_persistent_write_s"):
+                    self._gestures_submitted += 1
+                    self._last_submission_at = time.monotonic()
                     self._write_commands(cmds)
             except (OSError, ValueError) as exc:
                 # Ambiguous, exactly like UhidTouch._run_gesture's "delivery became
@@ -870,8 +982,7 @@ class PersistentUhidTouch(_UhidGestureBase):
                 # retried -- replaying could double an irreversible tap, or move the page an
                 # unknown amount from an unknown starting point. `self._dead = True` so the
                 # VERY NEXT call hits the guard above rather than attempting a second write.
-                self._dead = True
-                raise DriverClosed(
+                raise self._closed_error(
                     "persistent UHID gesture delivery became uncertain (stdin write "
                     f"failed); refusing to replay the gesture: {exc}"
                 ) from exc
@@ -899,7 +1010,8 @@ class PersistentUhidTouch(_UhidGestureBase):
                     if self._proc.poll() is not None:
                         break  # confirmed dead already; the check just below re-observes
                         # the same (idempotent) result and raises -- see that check
-            if self._proc.poll() is not None:
+            returncode = self._proc.poll()
+            if returncode is not None:
                 # Died during or immediately after this gesture: "delivery became uncertain"
                 # again, for the same never-replay reason (never-substitute: a half-delivered
                 # scroll must not be silently retried, which could double a gesture or move
@@ -907,10 +1019,10 @@ class PersistentUhidTouch(_UhidGestureBase):
                 # docstring's ps/PID caveat -- detecting a REMOTE crash this way is inferred,
                 # not proven, from the same exit-propagation contract UhidTouch's own
                 # `adb.shell` call already leans on.
-                self._dead = True
-                raise DriverClosed(
+                raise self._closed_error(
                     "persistent UHID gesture delivery became uncertain (the `hid` process "
-                    "died during or after delivery); refusing to replay the gesture"
+                    "died during or after delivery); refusing to replay the gesture",
+                    returncode,
                 )
 
     # --- public surface: `_UhidGestureBase`'s, unmodified ------------------

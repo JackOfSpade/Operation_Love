@@ -48,9 +48,9 @@ class AppStatus:
     # not being asked to stop, they are being told what licensed the numbering they are seeing.
     targeting_licence_notice: str | None = None
     error: str | None = None
-    # Human-readable cause of a "stopped" outcome that did NOT come from an exception --
-    # `error` already covers the exception path (worker.py's HALT-on-unexpected handler);
-    # this is the equivalent for a clean stop, so the hub can tell "operator clicked Stop"
+    # Human-readable cause of a handled "stopped" outcome -- `error` covers unexpected
+    # exceptions (worker.py's HALT handler). This includes DriverClosed, whose safe shutdown
+    # still interrupted the run, so the hub can tell "operator clicked Stop"
     # apart from a specific, nameable cause instead of rendering everything as a bare
     # "stopped". None for every other terminal state (out_of_profiles/rate_limited/error
     # already explain themselves via `state`/`error`).
@@ -100,6 +100,8 @@ class AppStatus:
     #             sentence as stop_reason.
     # "approval" -- the Hub training-decision bridge could not safely publish or complete a
     #             checkpoint, so no physical action or label was issued.
+    # "driver_closed" -- the app or input transport closed during the run. Buffered data
+    #             can still be saved, but the interrupted run needs its cause retained.
     # None for every stop that isn't one of the above (a manual Stop click,
     # out_of_profiles, rate_limited, defer/cold-start) -- stop_reason is also None in all
     # of those, so there is nothing to disambiguate.
@@ -142,6 +144,7 @@ _DECISIONS = frozenset({"like", "pass", "dislike", "defer", "no_face", "no_photo
 _STOP_KINDS = frozenset(
     {
         "approval",
+        "driver_closed",
         "opener",
         "deck_blocked",
         "targeting",

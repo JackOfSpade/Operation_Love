@@ -148,14 +148,18 @@ def test_stationarity_rendered_via_trace_renderer():
 
 
 def test_target_scroll_refusal_keeps_delivery_error_and_frame_pair_visible():
-    row = json.dumps({
-        "action": "navigate_to_item", "reason": "scroll_overshot",
-        "before": "before.png", "after": "after.png",
-        "navigation_refusal": {
-            "planned": {"step_px": 221, "bound_px": 231},
-            "achieved": {"step_px": 233, "delivery_error_px": 12},
-        },
-    })
+    row = json.dumps(
+        {
+            "action": "navigate_to_item",
+            "reason": "scroll_overshot",
+            "before": "before.png",
+            "after": "after.png",
+            "navigation_refusal": {
+                "planned": {"step_px": 221, "bound_px": 231},
+                "achieved": {"step_px": 233, "delivery_error_px": 12},
+            },
+        }
+    )
     report = bugreport._target_scroll_refusal_summary_md(["invalid", "[]", row])
     assert "planned 221px; bound 231px; measured 233px; delivery error 12px" in report
     assert "before.png" in report and "after.png" in report

@@ -26,7 +26,17 @@ def test_sqlite_store_conforms_to_store_protocol(tmp_path):
 
 @pytest.mark.parametrize(
     "value",
-    [True, math.nan, math.inf, -math.inf, 1e300, 10**10_000, "2026-01-01T00:00:00"],
+    [
+        True,
+        math.nan,
+        math.inf,
+        -math.inf,
+        1e300,
+        10**10_000,
+        "2026-01-01T00:00:00",
+        "0001-01-01T00:00:00+14:00",
+        "9999-12-31T23:59:59-12:00",
+    ],
     ids=[
         "bool",
         "nan",
@@ -35,6 +45,8 @@ def test_sqlite_store_conforms_to_store_protocol(tmp_path):
         "out-of-range-float",
         "huge-int",
         "naive-iso",
+        "utc-underflow-iso",
+        "utc-overflow-iso",
     ],
 )
 def test_sqlite_action_writes_reject_invalid_timestamp_values_without_overflow(
@@ -2473,3 +2485,97 @@ def test_sqlite_archive_decision_migration_does_not_hide_operational_errors(
     monkeypatch.setattr(store_module.sqlite3, "connect", connect)
     with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
         SQLiteStore(tmp_path / "store.db")
+
+
+def test_failed_label_name_insert_rolls_back_label_before_next_write(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.add_label("r", "hinge", False, [0.2], profile_name="Existing")
+        store.con.execute(
+            "CREATE TRIGGER reject_name BEFORE INSERT ON training_label_names "
+            "BEGIN SELECT RAISE(ABORT, 'name unavailable'); END"
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="name unavailable"):
+            store.add_label("r", "hinge", True, [0.8], profile_name="Failed")
+
+        assert store.load_labels() == [(False, [0.2])]
+        assert not store.con.in_transaction
+        store.record_decision("r", "hinge", "like", 0.8)
+        assert store.load_labels() == [(False, [0.2])]
+        assert store.con.execute(
+            "SELECT profile_name FROM training_label_names"
+        ).fetchall() == [("Existing",)]
+    finally:
+        store.close()
+
+
+def test_failed_label_name_delete_restores_label(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.add_label("r", "hinge", True, [0.8], profile_name="Existing")
+        store.con.execute(
+            "CREATE TRIGGER reject_name_delete BEFORE DELETE ON training_label_names "
+            "BEGIN SELECT RAISE(ABORT, 'name unavailable'); END"
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="name unavailable"):
+            store.remove_latest_training_label()
+
+        assert store.load_labels() == [(True, [0.8])]
+        assert not store.con.in_transaction
+        store.flush()
+        assert store.load_labels() == [(True, [0.8])]
+    finally:
+        store.close()
+
+
+def test_failed_commit_discards_write_before_next_operation(tmp_path, monkeypatch):
+    store = SQLiteStore(tmp_path / "store.db")
+    commit = store._commit
+
+    def unavailable_commit():
+        raise sqlite3.OperationalError("commit unavailable")
+
+    try:
+        monkeypatch.setattr(store, "_commit", unavailable_commit)
+        with pytest.raises(sqlite3.OperationalError, match="commit unavailable"):
+            store.record_decision("r", "hinge", "like", 0.8)
+        assert not store.con.in_transaction
+
+        monkeypatch.setattr(store, "_commit", commit)
+        store.record_decision("r", "hinge", "dislike", 0.2)
+        assert store.con.execute("SELECT decision FROM decisions").fetchall() == [
+            ("dislike",)
+        ]
+    finally:
+        store.close()
+
+
+def test_failed_rollback_preserves_the_write_failure(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    connection = store.con
+
+    class BrokenRollback:
+        def rollback(self):
+            raise sqlite3.OperationalError("rollback unavailable")
+
+        def __getattr__(self, name):
+            return getattr(connection, name)
+
+    try:
+        store.con.execute(
+            "CREATE TRIGGER reject_name BEFORE INSERT ON training_label_names "
+            "BEGIN SELECT RAISE(ABORT, 'name unavailable'); END"
+        )
+        store.con = BrokenRollback()
+
+        with pytest.raises(sqlite3.IntegrityError, match="name unavailable") as error:
+            store.add_label("r", "hinge", True, [0.8])
+
+        assert error.value.__notes__ == [
+            "SQLite rollback also failed (OperationalError: rollback unavailable)"
+        ]
+    finally:
+        connection.rollback()
+        store.close()

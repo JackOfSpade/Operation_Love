@@ -468,3 +468,33 @@ def test_real_assertion_failure_records_failed_outcome_and_fails_reconciliation(
         command, cwd=tmp_path, capture_output=True, text=True, check=False
     )
     assert run.returncode != 0 and "did not complete" in run.stderr
+
+
+def test_inherited_pytest_addopts_cannot_silently_filter_the_ci_inventory(tmp_path):
+    scripts = make_fixture_repo(tmp_path)
+    target = tmp_path / "shard.json"
+    run = subprocess.run(
+        [
+            sys.executable,
+            str(scripts / "run_ci_test_files.py"),
+            "--source-sha",
+            "fixture",
+            "--manifest",
+            str(target),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTEST_ADDOPTS": "-k parameter"},
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    manifest = json.loads(target.read_text())
+    assert manifest["inventory_count"] == manifest["completed_count"] == 15
+    assert manifest["outcome_counts"] == {
+        "passed": 12,
+        "skipped": 1,
+        "xfailed": 1,
+        "xpassed": 1,
+    }
+    validate_manifest(manifest, 1, "fixture")

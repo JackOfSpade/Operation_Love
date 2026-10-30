@@ -35,6 +35,7 @@
 #WinActivateForce
 
 CoordMode "Mouse", "Window"
+SetWorkingDir A_ScriptDir
 
 targeted_index := FileRead("targeted_index.txt") - 1  ; index start at 1. Making it "- 1" just makes loop easier to start at the index indicated in the file.
 
@@ -531,7 +532,7 @@ main(dating_app, root_directory)
 
 ; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
-main("bumble", "C:\Users\super\Desktop\Github\Operation_Love")
+main("bumble", A_ScriptDir)
 
 ; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 

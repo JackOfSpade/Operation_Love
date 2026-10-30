@@ -710,16 +710,27 @@ def _record_staged_opener(
 
     evidence_sink = getattr(store, "record_opener_send_evidence", None)
     if pre_send_evidence is not None and callable(evidence_sink):
-        evidence_sink(
-            record.run_id,
-            record.app,
-            record.opener,
-            profile_id=profile_id,
-            decision_source=decision_source,
-            decision_created_at=decision_created_at,
-            model_item_index=(pick.index if pick.index != ITEM_INDEX_ABSENT else None),
-            evidence=pre_send_evidence,
-        )
+        # The opener sink has already accepted the landed action. An independent evidence
+        # failure must not leave its draft eligible for a second commit or a contradictory
+        # discard, which would duplicate the opener row that succeeded above.
+        try:
+            evidence_sink(
+                record.run_id,
+                record.app,
+                record.opener,
+                profile_id=profile_id,
+                decision_source=decision_source,
+                decision_created_at=decision_created_at,
+                model_item_index=(
+                    pick.index if pick.index != ITEM_INDEX_ABSENT else None
+                ),
+                evidence=pre_send_evidence,
+            )
+        except Exception as exc:  # noqa: BLE001 -- preserve the accepted opener's lifecycle
+            print(
+                "Warning: opener was recorded, but its pre-send evidence could not be "
+                f"persisted ({type(exc).__name__})."
+            )
 
 
 def _is_invalid_gemini_api_key(exc: Exception) -> bool:

@@ -1,17 +1,10 @@
-cd beauty_and_BMI_analysis
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
-# Activate the virtual environment
-. .\analyze_beauty.venv\Scripts\Activate.ps1
-
-# Run the Python script
-python evaluate_images.py
-
-# Deactivate the virtual environment (optional)
-deactivate
-
-# Test
-# Read-Host "Press Enter to Exit"
-
-# Exit the PowerShell script
-exit
-
+$analysisDir = Join-Path $PSScriptRoot "beauty_and_BMI_analysis"
+Set-Location $analysisDir
+# Clear a prior actionable result even when Python cannot start.
+Set-Content -Path (Join-Path $analysisDir "beauty_and_BMI_analysis_result.txt") -Value "error" -Encoding ascii -NoNewline
+$python = Join-Path $analysisDir "analyze_beauty.venv\Scripts\python.exe"
+& $python (Join-Path $analysisDir "evaluate_images.py")
+exit $LASTEXITCODE

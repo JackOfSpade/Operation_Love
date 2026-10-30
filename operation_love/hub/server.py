@@ -175,6 +175,7 @@ def _wait_for_run_shutdown(state) -> bool:
 
 class _HubHTTPServer(ThreadingHTTPServer):
     csrf_token: str
+    state: HubState | None
 
 
 def _json_object_without_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
@@ -192,7 +193,13 @@ def _json_object_without_duplicate_keys(pairs: list[tuple[str, object]]) -> dict
 
 
 class _Handler(BaseHTTPRequestHandler):
-    state: HubState | None = None  # set by serve()
+    # Compatibility default for callers constructing a server through _bind(). Each bound
+    # server captures it once; production serve() installs its own state on that server.
+    state: HubState | None = None
+
+    def __init__(self, request, client_address, server):
+        self.state = getattr(server, "state", type(self).state)
+        super().__init__(request, client_address, server)
 
     def end_headers(self) -> None:
         """Attach browser hardening to every response, including empty/error responses.
@@ -712,14 +719,19 @@ def _bind(host: str, port: int, *, reuse_existing: bool = False) -> _HubHTTPServ
     for p in range(port, last_port + 1):  # find a free port near the default
         try:
             httpd = _HubHTTPServer((host, p), _Handler)
-            httpd.csrf_token = secrets.token_urlsafe(32)
-            return httpd
         except OSError as exc:
             if exc.errno == errno.EADDRINUSE or getattr(exc, "winerror", None) == 10048:
                 if reuse_existing and _is_existing_hub(host, p):
                     raise _ExistingHub(f"http://{host}:{p}/") from None
                 continue
             raise
+        try:
+            httpd.csrf_token = secrets.token_urlsafe(32)
+            httpd.state = _Handler.state
+        except BaseException:
+            httpd.server_close()
+            raise
+        return httpd
     raise SystemExit(f"Hub: no free port in {port}..{last_port}")
 
 
@@ -744,10 +756,13 @@ def serve(
         if open_browser:
             webbrowser.open(existing.url)
         return
-    _Handler.state = HubState(config_path)
-    url = f"http://{host}:{httpd.server_address[1]}/"
-    print(f"Hub: Operation Love control hub → {url}   (Ctrl-C to quit)")
+    state = None
+    browser_timer = None
     try:
+        state = HubState(config_path)
+        httpd.state = state
+        url = f"http://{host}:{httpd.server_address[1]}/"
+        print(f"Hub: Operation Love control hub → {url}   (Ctrl-C to quit)")
         if open_browser:
             browser_timer = threading.Timer(0.6, lambda: webbrowser.open(url))
             # The timer is only a convenience after the server is already live. It must not keep a
@@ -764,21 +779,22 @@ def serve(
     except KeyboardInterrupt:
         print("\nHub: shutting down…")
     finally:
-        if _Handler.state:
-            _Handler.state.stop()
-            # Let the active run flush/save before the process exits — but bounded, so Ctrl-C
-            # can never hang forever if something in the run is wedged. See
-            # _wait_for_run_shutdown for the two-stage bound: a flat budget everyone pays, then
-            # an extension only while an archive for an already-landed decision is in flight.
-            if not _wait_for_run_shutdown(_Handler.state):
-                print(
-                    f"Hub: run did not finish saving within its shutdown budget "
-                    f"({_SHUTDOWN_SAVE_TIMEOUT_S:.0f}s, extended only while an archive was "
-                    "still writing); exiting anyway (data may not be fully flushed)."
-                )
         try:
-            httpd.shutdown()
+            if browser_timer is not None:
+                browser_timer.cancel()
+            if state is not None:
+                state.stop()
+                # Let the active run flush/save before the process exits — but bounded, so
+                # Ctrl-C cannot hang forever if a run is wedged. Protect an archive for an
+                # already-landed decision through the same helper as tab-close shutdown.
+                if not _wait_for_run_shutdown(state):
+                    print(
+                        f"Hub: run did not finish saving within its shutdown budget "
+                        f"({_SHUTDOWN_SAVE_TIMEOUT_S:.0f}s, extended only while an archive was "
+                        "still writing); exiting anyway (data may not be fully flushed)."
+                    )
         finally:
-            # shutdown() stops serve_forever but deliberately leaves the listening socket open.
-            # Always release it so a stopped in-process hub can rebind its port immediately.
+            # serve_forever has already returned or raised here. Calling shutdown before it
+            # ever started (for example after a HubState constructor failure) would deadlock.
+            # Close even when initialization or run cleanup failed so the port is reusable.
             httpd.server_close()

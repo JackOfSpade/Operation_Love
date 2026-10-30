@@ -37,6 +37,7 @@ import subprocess
 from collections.abc import Sequence
 
 from ..human import human_delay
+from ..image_validation import _raster_mime
 from ..typography import (
     describe_char,
     fold_to_ascii,
@@ -54,7 +55,8 @@ _DEVICE_LOST_PHRASES = (
 )
 
 # A screenshot cannot deliver input or otherwise change device state.  A single retry is
-# therefore safe after a host-side transport timeout, unlike retrying any action command.
+# therefore safe after a host-side transport timeout or malformed frame, unlike retrying
+# any action command.
 # Keep this a fixed bound: an unavailable or wedged device must still stop the run.
 _SCREENCAP_ATTEMPTS = 2
 
@@ -92,6 +94,21 @@ class AdbError(RuntimeError):
         if stderr:
             detail += f"\nstderr: {stderr}"
         super().__init__(detail)
+
+
+class _InvalidScreencapPng(AdbError):
+    """A completed, read-only screencap returned no fully decodable PNG frame."""
+
+
+def _validate_screencap_png(payload: bytes, argv: Sequence[str]) -> None:
+    # ADB can exit successfully after handing us only part of a PNG (run 11d40827ac78).
+    # The shared validator checks chunk CRCs through IEND AND complete decompressed pixel
+    # rows. Neither a signature nor a metadata-only image open proves the pixels arrived.
+    if _raster_mime(payload) != "image/png":
+        raise _InvalidScreencapPng(
+            argv,
+            f"ADB screencap returned an invalid or incomplete PNG ({len(payload)} bytes)",
+        )
 
 
 def _bezier(
@@ -320,27 +337,30 @@ class Adb:
 
     # --- screen --------------------------------------------------------
     def screencap(self) -> bytes:
-        """Return one PNG frame, retrying one host-side timeout of this read-only command.
+        """Return one verified PNG frame, with one retry for timeout or malformed data.
 
         ``exec-out screencap -p`` is the sole command eligible for this recovery path: it
-        observes the screen and cannot replay a tap, swipe, typed text, or shell write.  A
+        observes the screen and cannot replay a tap, swipe, typed text, or shell write. An
+        exit-zero response must still pass complete PNG verification and pixel decoding. A
         nonzero ADB response is not assumed transient, and neither are device-loss errors;
         both fail closed without a second command.  On an exhausted retry, retain the final
-        ADB error and add the initial timeout as traceback context for diagnosis.
+        ADB error and add the initial failure as traceback context for diagnosis.
         """
         args = ["exec-out", "screencap", "-p"]
         first_error: AdbError | None = None
         for attempt in range(_SCREENCAP_ATTEMPTS):
             try:
-                return self._run_device(args)
+                payload = self._run_device(args)
+                _validate_screencap_png(payload, args)
+                return payload
             except DriverClosed:
                 raise
             except AdbError as error:
-                # _run chains the original TimeoutExpired, so do not classify arbitrary ADB
-                # failures from their text.  This is intentionally narrower than a generic
-                # "retry on AdbError" policy.
-                if attempt + 1 < _SCREENCAP_ATTEMPTS and isinstance(
-                    error.__cause__, subprocess.TimeoutExpired
+                # _run chains the original TimeoutExpired. Only that cause or this method's
+                # typed invalid-PNG error earns a retry; arbitrary ADB errors never do.
+                if attempt + 1 < _SCREENCAP_ATTEMPTS and (
+                    isinstance(error.__cause__, subprocess.TimeoutExpired)
+                    or isinstance(error, _InvalidScreencapPng)
                 ):
                     if first_error is None:
                         first_error = error
@@ -354,7 +374,8 @@ class Adb:
                         error.stderr,
                     )
                     terminal_error.add_note(
-                        "Read-only screencap retry after initial timeout: "
+                        "Read-only screencap retry after initial "
+                        f"{'invalid PNG' if isinstance(first_error, _InvalidScreencapPng) else 'timeout'}: "
                         f"{first_error}"
                     )
                     raise terminal_error from error

@@ -145,7 +145,17 @@ def _store(client, flush_every=25):
 
 @pytest.mark.parametrize(
     "value",
-    [True, math.nan, math.inf, -math.inf, 1e300, 10**10_000, "2026-01-01T00:00:00"],
+    [
+        True,
+        math.nan,
+        math.inf,
+        -math.inf,
+        1e300,
+        10**10_000,
+        "2026-01-01T00:00:00",
+        "0001-01-01T00:00:00+14:00",
+        "9999-12-31T23:59:59-12:00",
+    ],
     ids=[
         "bool",
         "nan",
@@ -154,6 +164,8 @@ def _store(client, flush_every=25):
         "out-of-range-float",
         "huge-int",
         "naive-iso",
+        "utc-underflow-iso",
+        "utc-overflow-iso",
     ],
 )
 def test_bigquery_action_writes_reject_invalid_timestamp_values_without_overflow(value):

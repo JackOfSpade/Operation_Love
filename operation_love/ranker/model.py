@@ -34,8 +34,8 @@ from __future__ import annotations
 import copy
 import math
 import threading
-from numbers import Real
 
+from ..numeric import finite_real_as_float as _finite_real_as_float
 from .threshold import (
     effective_target as _effective_target,
     fit_folds,
@@ -74,23 +74,6 @@ def _sigmoid(z: float) -> float:
     if z > 60:
         return 1.0
     return 1.0 / (1.0 + math.exp(-z))
-
-
-def _finite_real_as_float(value: object) -> float | None:
-    """Return a finite real as ``float`` without leaking conversion errors.
-
-    Some valid ``numbers.Real`` implementations -- including an arbitrarily large Python
-    integer -- raise ``OverflowError`` when converted to float.  Public validation paths should
-    reject those values with their documented ``ValueError`` rather than exposing that backend
-    conversion detail to callers.
-    """
-    if isinstance(value, bool) or not isinstance(value, Real):
-        return None
-    try:
-        converted = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return converted if math.isfinite(converted) else None
 
 
 class _PurePyLogReg:

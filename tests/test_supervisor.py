@@ -930,7 +930,16 @@ def test_normal_terminal_reason_survives_successful_save(
     assert captured["status"].snapshot()["apps"]["hinge"]["state"] == terminal_state
 
 
-def test_stop_reason_survives_both_shutdown_restamps(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("stop_kind", "stop_reason"),
+    [
+        ("opener", "run budget reached"),
+        ("driver_closed", "DriverClosed: persistent UHID process exited"),
+    ],
+)
+def test_stop_reason_survives_both_shutdown_restamps(
+    monkeypatch, tmp_path, stop_kind, stop_reason
+):
     """Regression pin (adversarial audit item F). worker.py's OpenerService-triggered stop
     path (_finish_session(state="stopped", stop_reason=...)) publishes a human-readable
     cause -- e.g. "run budget reached" -- alongside state="stopped" BEFORE run()'s shutdown
@@ -965,7 +974,8 @@ def test_stop_reason_survives_both_shutdown_restamps(monkeypatch, tmp_path):
                 self.app,
                 mode=self.mode,
                 state="stopped",
-                stop_reason="run budget reached",
+                stop_reason=stop_reason,
+                stop_kind=stop_kind,
             )
 
         def join(self, timeout=None):
@@ -994,9 +1004,8 @@ def test_stop_reason_survives_both_shutdown_restamps(monkeypatch, tmp_path):
     snap = captured["status"].snapshot()
     app = snap["apps"]["hinge"]
     assert app["state"] == "stopped"
-    assert (
-        app["stop_reason"] == "run budget reached"
-    )  # survived BOTH shutdown re-stamps
+    assert app["stop_reason"] == stop_reason  # survived BOTH shutdown re-stamps
+    assert app["stop_kind"] == stop_kind
     assert snap["phase"] == "stopped"  # the save itself still succeeded
 
 

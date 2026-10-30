@@ -323,14 +323,15 @@ class TouchWatcher:
         # it does NOT buffer. `adb shell getevent -lt` (no PTY) delivered its output at 0.074s
         # and `adb shell -tt getevent -lt` at 0.079s -- identical, so getevent is flushing per
         # line to a plain pipe already. Left as a plain pipe because a PTY would buy nothing
-        # and cost something: it rewrites newlines to \r\n and merges stderr into stdout,
-        # both of which only make this parser's input harder to reason about.
+        # and rewrites newlines to \r\n. Merge stderr explicitly so diagnostic output cannot
+        # fill an unread second pipe and stall the event stream; non-event lines are already
+        # handled by the parser's redacted format samples.
         argv += ["shell", "getevent", "-lt", dev_path]
         try:
             self._proc = subprocess.Popen(
                 argv,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -342,12 +343,18 @@ class TouchWatcher:
             ) from exc
 
         self._alive = True
-        self._thread = threading.Thread(
-            target=self._read_loop,
-            name="touchwatch-reader",
-            daemon=True,
-        )
-        self._thread.start()
+        try:
+            self._thread = threading.Thread(
+                target=self._read_loop,
+                name="touchwatch-reader",
+                daemon=True,
+            )
+            self._thread.start()
+        except Exception as exc:
+            self.close()
+            raise TouchWatchUnavailable(
+                f"could not start getevent reader thread: {exc}"
+            ) from exc
 
     def close(self) -> None:
         """Stop the reader and terminate the getevent process. Best-effort and idempotent,
@@ -355,21 +362,41 @@ class TouchWatcher:
         stream had already died on its own."""
         self._alive = False
         proc, self._proc = self._proc, None
+        thread, self._thread = self._thread, None
         if proc is not None:
             try:
                 proc.terminate()
             except Exception:  # noqa: BLE001 — best-effort; the process may already be gone
                 pass
-        thread, self._thread = self._thread, None
-        if thread is not None:
-            thread.join(timeout=self._close_timeout)
-        if proc is not None:
             try:
                 proc.wait(timeout=self._close_timeout)
             except Exception:  # noqa: BLE001 — a stuck adb process must not hang teardown
                 try:
                     proc.kill()
                 except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    proc.wait(timeout=self._close_timeout)
+                except Exception:  # noqa: BLE001 — even kill/reap can fail during teardown
+                    pass
+        if thread is not None:
+            try:
+                thread.join(timeout=self._close_timeout)
+            except RuntimeError:
+                # Thread.start() can fail after the process was created. The same cleanup
+                # path owns that rollback, and an unstarted thread cannot be joined.
+                pass
+        if proc is not None:
+            for stream in (proc.stdout, proc.stderr):
+                # TextIOWrapper.close() can block behind an active read. The reader owns
+                # stdout until it exits; stderr has no reader and can always be closed.
+                if stream is None or (
+                    stream is proc.stdout and thread is not None and thread.is_alive()
+                ):
+                    continue
+                try:
+                    stream.close()
+                except Exception:  # noqa: BLE001 — one pipe failure must not leak the other
                     pass
 
     # --- reading ---------------------------------------------------------
@@ -411,6 +438,11 @@ class TouchWatcher:
         except Exception:  # noqa: BLE001 — see docstring: must never raise into the process
             pass
         finally:
+            if proc is not None and proc.stdout is not None:
+                try:
+                    proc.stdout.close()
+                except Exception:  # noqa: BLE001 — stream teardown must not escape the thread
+                    pass
             self._alive = False
 
     def _feed_line(self, line: str) -> None:

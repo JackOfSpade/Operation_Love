@@ -757,14 +757,34 @@ def test_reader_ignores_boolean_and_non_finite_timing_values():
             "iter_wall_s": True,
             "screencap_s": False,
         },
+        {
+            "action": "capture_iteration_timing",
+            "iter_wall_s": 10**400,
+            "screencap_s": -(10**400),
+        },
     ]
 
     attr = hct.summarize_iteration_timing(records)
 
-    assert attr.records == 3
+    assert attr.records == 4
     assert attr.wall_s_total == pytest.approx(1.0)
     assert attr.buckets["screencap_s"].total_s == pytest.approx(0.4)
     assert attr.buckets["unattributed_s"].total_s == pytest.approx(0.6)
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    ['{"value":' + "9" * 5000 + "}", "[" * 2000 + "0" + "]" * 2000],
+    ids=["oversized_integer", "excessive_nesting"],
+)
+def test_reader_skips_decoder_limits_and_preserves_later_records(tmp_path, malformed):
+    path = tmp_path / "actions.jsonl"
+    valid = {"action": "capture_iteration_timing", "iter_wall_s": 1.0}
+    path.write_text(malformed + "\n" + json.dumps(valid) + "\n", encoding="utf-8")
+
+    records = hct.parse_actions_jsonl(path)
+    assert records == [valid]
+    assert hct.summarize_iteration_timing(records).wall_s_total == 1.0
 
 
 def test_reader_cli_prints_the_table_by_default_and_json_on_flag(tmp_path, capsys):

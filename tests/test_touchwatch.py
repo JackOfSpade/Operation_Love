@@ -184,9 +184,13 @@ class _FakeStdout:
 
     def __init__(self, lines):
         self._lines = list(lines)
+        self.closed = False
 
     def __iter__(self):
         return iter(self._lines)
+
+    def close(self):
+        self.closed = True
 
 
 class _FakePopen:
@@ -559,7 +563,74 @@ def test_start_streams_getevent_and_close_is_safe_after_eof(monkeypatch):
     assert gestures[0].is_tap(5.0)
     assert not gestures[1].is_tap(5.0)
 
+    proc = w._proc
+    assert proc.kwargs["stderr"] is subprocess.STDOUT
     w.close()  # must not raise even though the process already finished on its own
+    assert proc.stdout.closed
+    assert proc.stderr.closed
+    assert w._proc is None
+    assert w._thread is None
+
+
+def test_close_reaps_a_process_that_requires_kill():
+    class StuckProcess(_FakePopen):
+        def __init__(self):
+            super().__init__(["adb"])
+            self.wait_calls = 0
+            self.kill_called = False
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            if not self.kill_called:
+                raise subprocess.TimeoutExpired(self.argv, timeout)
+            return -9
+
+        def kill(self):
+            self.kill_called = True
+
+    w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
+    proc = w._proc = StuckProcess()
+
+    w.close()
+    w.close()  # repeated cleanup must not touch the retired process
+
+    assert proc.terminate_called
+    assert proc.kill_called
+    assert proc.wait_calls == 2
+    assert proc.stdout.closed
+    assert proc.stderr.closed
+
+
+def test_failed_reader_start_rolls_back_process_and_pipes(monkeypatch):
+    class UnstartedThread:
+        def __init__(self, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("cannot start new thread")
+
+        def join(self, timeout=None):
+            raise RuntimeError("cannot join thread before it is started")
+
+        def is_alive(self):
+            return False
+
+    proc = _FakePopen(["adb"])
+    monkeypatch.setattr(touchwatch.subprocess, "run", _fake_run_ok)
+    monkeypatch.setattr(touchwatch.subprocess, "Popen", lambda *a, **kw: proc)
+    monkeypatch.setattr(touchwatch.threading, "Thread", UnstartedThread)
+    w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
+
+    with pytest.raises(touchwatch.TouchWatchUnavailable, match="reader thread"):
+        w.start()
+
+    assert proc.terminate_called
+    assert proc.wait_called
+    assert proc.stdout.closed
+    assert proc.stderr.closed
+    assert w._proc is None
+    assert w._thread is None
+    assert not w.alive
 
 
 def test_start_is_idempotent(monkeypatch):

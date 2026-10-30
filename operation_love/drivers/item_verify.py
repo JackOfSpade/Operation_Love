@@ -1578,7 +1578,9 @@ def _inline_photo_header_rows(gray, *, np) -> int:
     density = (gray[:, :width] < 235).mean(axis=1)
     dense = density >= 0.74
     edges = np.diff(np.r_[False, dense, False].astype(np.int8))
-    runs = list(zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1), strict=True))
+    runs = list(
+        zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1), strict=True)
+    )
     runs = [(int(a), int(b)) for a, b in runs if b - a >= max(300, height // 2)]
     if len(runs) != 1:
         return 0
@@ -1590,9 +1592,11 @@ def _inline_photo_header_rows(gray, *, np) -> int:
     # Blank sky/padding alone is not caption evidence. Require separate short ink bands,
     # with white rows between them, as the measured title and two caption lines provide.
     ink_edges = np.diff(np.r_[False, density[:start] >= 0.03, False].astype(np.int8))
-    ink_runs = list(zip(
-        np.flatnonzero(ink_edges == 1), np.flatnonzero(ink_edges == -1), strict=True
-    ))
+    ink_runs = list(
+        zip(
+            np.flatnonzero(ink_edges == 1), np.flatnonzero(ink_edges == -1), strict=True
+        )
+    )
     text_bands = [b - a for a, b in ink_runs if 8 <= b - a <= start * 0.30]
     if len(text_bands) < 2:
         return 0
@@ -1788,7 +1792,11 @@ def _compare_item(
         reference,
         f"inline reframe rows {best_start}..{best_start + best_rows} of a {crop_height}px "
         f"crop, width-derived {window_px}px swept +-{tolerance}px"
-        + (f"; sparse white header ends at source row {header_rows}" if header_rows else ""),
+        + (
+            f"; sparse white header ends at source row {header_rows}"
+            if header_rows
+            else ""
+        ),
     )
 
 

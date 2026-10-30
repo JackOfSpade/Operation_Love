@@ -1,247 +1,179 @@
-import cv2
+"""Archived screenshot analysis, with explicit failures and no shell command strings.
+
+The BMI entry point currently reports unavailable inference, so this pipeline stops
+without publishing an actionable decision until a verified implementation exists.
+"""
+
+from __future__ import annotations
+
+import math
 import os
+from pathlib import Path
 import shutil
 import subprocess
-from retinaface import RetinaFace
+import sys
 import uuid
 
+if __package__:
+    from .analyze_bmi import require_available as require_bmi_available
+else:
+    from analyze_bmi import require_available as require_bmi_available
 
-def run_in_env(script_command, env_path):
-    activate_env_command = f"{env_path}\\Scripts\\Activate.ps1"
-    command = f"{activate_env_command}; {script_command}"
-    result = subprocess.run(
-        ["powershell", "-Command", command], capture_output=True, text=True, check=False
-    )
-    return result.stdout, result.stderr
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+RESULT_PATH = SCRIPT_DIR / "beauty_and_BMI_analysis_result.txt"
+SCREENSHOTS_DIR = SCRIPT_DIR.parent / "Screenshots"
+VALID_EXTENSIONS = {".jpg", ".jpeg", ".jfif", ".png", ".bmp", ".gif", ".webp"}
+ANALYSIS_TIMEOUT_S = 300
+
+
+def run_in_env(script_args, env_path):
+    """Run an argv sequence with the environment's own interpreter, without activation."""
+    if isinstance(script_args, (str, bytes)) or not script_args:
+        raise ValueError("script_args must be a nonempty argument sequence")
+    env = Path(env_path)
+    python = env / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    return subprocess.run(
+        [str(python), *(str(arg) for arg in script_args)],
+        cwd=SCRIPT_DIR,
+        capture_output=True,
+        text=True,
+        timeout=ANALYSIS_TIMEOUT_S,
+        check=True,
+    ).stdout
 
 
 def detect_and_crop_face_retinaface(image_path, margin=0.5):
-    # No dimension resize necessary. Inference code from original repos already does the proper dimension transformations.
-    # Just make sure all features of the face are captured.
+    import cv2
+    from retinaface import RetinaFace
 
-    # Load the image
-    image = cv2.imread(image_path)
+    if not math.isfinite(margin) or margin < 0:
+        raise ValueError("face margin must be finite and nonnegative")
+    image = cv2.imread(str(image_path))
     if image is None:
         raise ValueError("Image not loaded properly.")
-
-    # Convert the image to RGB (RetinaFace expects RGB images)
-    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-    # Detect faces using RetinaFace
-    faces = RetinaFace.detect_faces(rgb_image)
-
-    if faces is None or len(faces) == 0:
+    faces = RetinaFace.detect_faces(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    if not faces:
         return None
-
-    # Assuming we are only interested in the first detected face
-    face_key = next(iter(faces.keys()))
-    face = faces[face_key]
-    face_box = face["facial_area"]
-    x, y, x_end, y_end = face_box
-
-    w = x_end - x
-    h = y_end - y
-
-    # Calculate margin size
-    x_margin = int(w * margin)
-    y_margin = int(h * margin)
-
-    # Adjust the bounding box with the margin
-    x_start = max(x - x_margin, 0)
-    y_start = max(y - y_margin, 0)
+    face = next(iter(faces.values()))
+    x, y, x_end, y_end = map(int, face["facial_area"])
+    if x_end <= x or y_end <= y:
+        raise ValueError("detector returned an empty face box")
+    x_margin, y_margin = int((x_end - x) * margin), int((y_end - y) * margin)
+    x_start, y_start = max(x - x_margin, 0), max(y - y_margin, 0)
     x_end = min(x_end + x_margin, image.shape[1])
     y_end = min(y_end + y_margin, image.shape[0])
+    if x_end <= x_start or y_end <= y_start:
+        raise ValueError("detector returned a face outside the image")
+    face = image[y_start:y_end, x_start:x_end]
+    if not face.size:
+        raise ValueError("detector returned a face outside the image")
+    return face
 
-    cropped_face = image[y_start:y_end, x_start:x_end]
 
-    return cropped_face
+def _analysis_output(output, label, path_count):
+    """Read the archived analyzer's score followed by its renamed image paths."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    matches = [i for i, line in enumerate(lines) if line.startswith(f"{label}:")]
+    if len(matches) != 1:
+        raise ValueError(f"analyzer must return exactly one {label} score")
+    index = matches[0]
+    score = float(lines[index].split(":", 1)[1].strip())
+    if not math.isfinite(score) or score <= 0:
+        raise ValueError(f"{label} score must be positive and finite")
+    paths = [Path(line) for line in lines[index + 1 :]]
+    if len(paths) != path_count or not all(path.is_file() for path in paths):
+        raise ValueError(
+            f"{label} analyzer did not return {path_count} existing image paths"
+        )
+    return score, paths
+
+
+def decide(beauty_score, bmi_score):
+    """Preserve the archived decision policy only for valid analyzer results."""
+    if (
+        not math.isfinite(beauty_score)
+        or not 1 <= beauty_score <= 5
+        or not math.isfinite(bmi_score)
+        or bmi_score <= 0
+    ):
+        raise ValueError("analysis scores are outside their valid ranges")
+    baseline_beauty, baseline_bmi = 2.25, 27.39
+    beauty_diff = abs((beauty_score - baseline_beauty) / baseline_beauty)
+    bmi_diff = 3 * abs((bmi_score - baseline_bmi) / baseline_bmi)
+    if beauty_score >= 3.5 and bmi_score <= 18.5:
+        return "super_like"
+    if (
+        (beauty_score >= baseline_beauty and bmi_score <= baseline_bmi)
+        or (
+            beauty_score < baseline_beauty
+            and bmi_score < baseline_bmi
+            and bmi_diff >= beauty_diff
+        )
+        or (
+            bmi_score > baseline_bmi
+            and beauty_score > baseline_beauty
+            and beauty_diff >= bmi_diff
+        )
+    ):
+        return "like"
+    return "dislike"
+
+
+def analyze_image(image_path):
+    import cv2
+
+    face = detect_and_crop_face_retinaface(image_path)
+    if face is None:
+        target = image_path.with_stem(f"{image_path.stem} No Face Detected")
+        if target.exists():
+            raise FileExistsError(target)
+        image_path.rename(target)
+        return "No face detected"
+    # Do not load a second model or rename source images when the required BMI
+    # stage is already known to be unavailable.
+    require_bmi_available()
+    cropped_dir = image_path.parent / "cropped"
+    cropped_dir.mkdir(exist_ok=True)
+    cropped = cropped_dir / f"Cropped {uuid.uuid4()}{image_path.suffix}"
+    if not cv2.imwrite(str(cropped), face):
+        raise OSError(f"could not save face crop: {cropped}")
+    beauty_output = run_in_env(
+        [SCRIPT_DIR / "analyze_beauty.py", cropped, image_path],
+        SCRIPT_DIR / "analyze_beauty.venv",
+    )
+    beauty, (cropped, original) = _analysis_output(beauty_output, "Beauty Score", 2)
+    bmi_output = run_in_env(
+        [SCRIPT_DIR / "analyze_bmi.py", cropped, original],
+        SCRIPT_DIR / "analyze_bmi.venv",
+    )
+    bmi, (original,) = _analysis_output(bmi_output, "BMI", 1)
+    decision = decide(beauty, bmi)
+    destination = image_path.parent / decision
+    destination.mkdir(exist_ok=True)
+    if (destination / original.name).exists():
+        raise FileExistsError(destination / original.name)
+    shutil.move(str(original), str(destination))
+    return decision
 
 
 def main():
-    screenshots_dir = "../Screenshots"
-    analyze_beauty_script_path = "analyze_beauty.py"
-    analyze_bmi_script_path = "analyze_bmi.py"
-    analyze_beauty_venv_path = "./analyze_beauty.venv"
-    analyze_bmi_venv_path = "./analyze_bmi.venv"
-    valid_extensions = {".jpg", ".jpeg", ".jfif", ".png", ".bmp", ".gif", ".webp"}
-    cropped_folder_path = screenshots_dir + "/cropped"
-    # Make folder if it doesn't exist
-    os.makedirs(cropped_folder_path, exist_ok=True)
-
-    image_files = [
-        f
-        for f in os.listdir(screenshots_dir)
-        if os.path.isfile(os.path.join(screenshots_dir, f))
-        and os.path.splitext(f)[1].lower() in valid_extensions
-    ]
-
-    for image_file_name in image_files:
-        ext = os.path.splitext(image_file_name)[1]
-
-        image_path = os.path.join(screenshots_dir, image_file_name)
-
-        # Generate UUID name
-        image_file_name = f"{uuid.uuid4()}"
-        print("\n" + image_file_name)
-        image_file_name = image_file_name + ext
-        new_image_path = os.path.join(screenshots_dir, image_file_name)
-
-        os.rename(image_path, new_image_path)
-
-        # Set original variable
-        image_path = new_image_path
-
-        # Load image to ensure it is valid
-        image = cv2.imread(image_path)
-
-        if image is None:
-            continue
-
-        cropped_image_path = cropped_folder_path + "/Cropped  " + image_file_name
-        uncropped_image_path = screenshots_dir + "/" + image_file_name
-
-        # Method 1
-        face = detect_and_crop_face_retinaface(image_path=image_path)
-
-        decision = None
-
-        if face is not None:
-            # Save the cropped faces to a file
-            cv2.imwrite(cropped_image_path, face)
-
-            analyze_beauty_script_command = f'python {analyze_beauty_script_path} "{cropped_image_path}" "{uncropped_image_path}"'
-            output, error = run_in_env(
-                analyze_beauty_script_command, analyze_beauty_venv_path
-            )
-            new_file_path = None
-            parent_new_file_path = None
-            beauty_score = None
-
-            if output and not error:
-                lines = output.split("\n")
-
-                for line in lines:
-                    # -----Test----------------------------------------------
-                    # print("line: " + line)
-                    # print("len(line.strip()) > 0: " + str(len(line.strip()) > 0))
-                    # print("line.lower().startswith('beauty'): " + str(line.lower().startswith("beauty")))
-                    # print("'cropped' in line.lower(): " + str("cropped" in line.lower()))
-                    # --------------------------------------------------------
-                    if len(line.strip()) > 0:
-                        if line.lower().startswith("beauty"):
-                            print(line)
-                            beauty_score = float(line.split(": ")[1].strip())
-                        elif "/cropped/" in line.lower():
-                            new_file_path = line
-                        else:
-                            parent_new_file_path = line
-
-                analyze_bmi_script_command = f'python {analyze_bmi_script_path} "{new_file_path}" "{parent_new_file_path}"'
-                output, error = run_in_env(
-                    analyze_bmi_script_command, analyze_bmi_venv_path
-                )
-                parent_new_file_path2 = None
-                BMI_score = None
-
-                if output and not error:
-                    lines = output.split("\n")
-
-                    for line in lines:
-                        if len(line.strip()) > 0:
-                            if line.lower().startswith("bmi"):
-                                print(line)
-                                BMI_score = float(line.split(": ")[1].strip())
-                            else:
-                                parent_new_file_path2 = line
-
-                    # Beauty Score range: 1 - 5
-                    # Underweight: BMI less than 18.5
-                    # Normal weight: BMI 18.5 – 24.9 (mid: 21.7)
-                    # Overweight: BMI 25 – 29.9
-                    # Obesity: BMI 30 or greater
-
-                    # Baseline
-                    baseline_beauty_score = 2.5
-                    baseline_BMI_score = 24.9
-
-                    # 10% adjustment for possible inaccuracies
-                    baseline_beauty_score = 2.25
-                    baseline_BMI_score = 27.39
-
-                    # Calculate percentage difference from baseline
-                    beauty_percentage_diff = abs(
-                        (beauty_score - baseline_beauty_score) / baseline_beauty_score
-                    )
-                    BMI_percentage_diff = abs(
-                        (BMI_score - baseline_BMI_score) / baseline_BMI_score
-                    )
-
-                    # Weights for perceived importance
-                    beauty_weight = 1
-                    BMI_weight = 3  # 0.5% change in BMI is equivalent to a 1.5% change in beauty score
-
-                    # Calculate weighted percentage differences
-                    weighted_beauty_diff = beauty_weight * beauty_percentage_diff
-                    weighted_BMI_diff = BMI_weight * BMI_percentage_diff
-
-                    if beauty_score >= 3.5 and BMI_score <= 18.5:
-                        super_like_folder = screenshots_dir + "/super_like"
-                        os.makedirs(super_like_folder, exist_ok=True)
-                        # Move the file
-                        shutil.move(parent_new_file_path2, super_like_folder)
-
-                        decision = "super_like"
-                    elif (
-                        (
-                            beauty_score >= baseline_beauty_score
-                            and BMI_score <= baseline_BMI_score
-                        )
-                        or (
-                            beauty_score < baseline_beauty_score
-                            and BMI_score < baseline_BMI_score
-                            and weighted_BMI_diff >= weighted_beauty_diff
-                        )
-                        or (
-                            BMI_score > baseline_BMI_score
-                            and beauty_score > baseline_beauty_score
-                            and weighted_beauty_diff >= weighted_BMI_diff
-                        )
-                    ):
-                        like_folder = screenshots_dir + "/like"
-                        os.makedirs(like_folder, exist_ok=True)
-                        # Move the file
-                        shutil.move(parent_new_file_path2, like_folder)
-
-                        decision = "like"
-                    else:
-                        dislike_folder = screenshots_dir + "/dislike"
-                        os.makedirs(dislike_folder, exist_ok=True)
-                        # Move the file
-                        shutil.move(parent_new_file_path2, dislike_folder)
-
-                        decision = "dislike"
-                else:
-                    print(f"analyze_bmi error: {error}")
-                    decision = "like"
-            else:
-                print(f"analyze_beauty error: {error}")
-                decision = "like"
-        else:
-            print("No face detected")
-            decision = "No face detected"
-
-            directory = os.path.dirname(uncropped_image_path)
-            base_name, ext = os.path.splitext(os.path.basename(uncropped_image_path))
-            new_base_name = f"{base_name} No Face Detected"
-            new_file_path = os.path.join(directory, new_base_name + ext)
-            new_file_path = new_file_path.replace("\\", "/")
-            os.rename(uncropped_image_path, new_file_path)
-
-        with open(
-            os.path.join(os.getcwd(), "beauty_and_BMI_analysis_result.txt"), "w"
-        ) as file:
-            file.write(decision)
+    # A failed/empty run must never leave a previous profile's LIKE ready for AHK to read.
+    RESULT_PATH.write_text("error", encoding="utf-8")
+    image_paths = sorted(
+        path
+        for path in SCREENSHOTS_DIR.iterdir()
+        if path.is_file() and path.suffix.lower() in VALID_EXTENSIONS
+    )
+    if len(image_paths) != 1:
+        raise ValueError(f"expected exactly one screenshot; found {len(image_paths)}")
+    decision = analyze_image(image_paths[0])
+    RESULT_PATH.write_text(decision, encoding="utf-8")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print(f"Analysis failed: {exc}", file=sys.stderr)
+        sys.exit(1)

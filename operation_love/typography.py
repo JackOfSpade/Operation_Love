@@ -263,11 +263,7 @@ def undeliverable_sequences(text: str) -> list[str]:
     that rewording is no longer done here).
     """
     folded = fold_to_ascii(text)
-    found: list[str] = []
-    for i in range(len(folded) - 1):
-        if folded[i] == "%" and folded[i + 1] == "s" and "%s" not in found:
-            found.append("%s")
-    return found
+    return ["%s"] if "%s" in folded else []
 
 
 def describe_char(ch: str) -> str:
@@ -305,7 +301,10 @@ def format_duration(seconds: float | None) -> str:
     it can never close a cycle from any direction."""
     if seconds is None:
         return "unknown duration"
-    total = max(0, int(round(seconds)))
+    try:
+        total = max(0, int(round(seconds)))
+    except (TypeError, ValueError, OverflowError):
+        return "unknown duration"
     hours, rem = divmod(total, 3600)
     minutes, secs = divmod(rem, 60)
     if hours:

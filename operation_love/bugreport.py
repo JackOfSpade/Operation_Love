@@ -138,6 +138,10 @@ _ADB_SCREENCAP_TIMEOUT_RE = re.compile(
 _RECOVERED_PROVIDER_FAILURE_RE = re.compile(
     r"\btrying the next configured model\b", re.IGNORECASE
 )
+_DRIVER_CLOSED_STOP_NOTICE = "; Stopping run so buffered data can be saved."
+_SHUTDOWN_SAVE_RE = re.compile(
+    r"\b(?:all data saved to|buffered rows saved to|saved to)\b"
+)
 # supervisor.py's shutdown line for rows the store permanently gave up on. It imports this
 # exact constant (bugreport is pure stdlib, so anything may import it; the reverse would drag
 # the whole runtime into a diagnostic module), which is what keeps the printer and this reader
@@ -899,8 +903,9 @@ def _capture_window_has_dwell_walk_stop(
     reading `should_stop` in the handler that caught the cancellation. Both say the operator
     ended the walk; only the second one existed in the run that exposed this gap.
     """
-    for prior in reversed(records[:capture_index]):
-        if prior.get("action") == "capture":
+    for prior_index in range(capture_index - 1, -1, -1):
+        prior = records[prior_index]
+        if prior.get("action") in {"capture", "capture_aborted"}:
             break
         if prior.get("action") == "still_photo_dwell_walk_candidate" and prior.get(
             "outcome"
@@ -953,7 +958,7 @@ def _completion_capture_facts(st: dict, config_path: str) -> dict[str, object]:
 
     A debug base can contain many old runs, so this intentionally refuses to fall back to its
     newest folder: only a directory named by the status snapshot's run_id belongs to the run
-    being assessed. The facts already exist in the driver JSONL; this extracts its last capture.
+    being assessed. Keep the last capture's detail and count genuine refusals across the run.
 
     ``items_unavailable`` IS READ HERE BECAUSE THE COVERAGE CHANNEL IS ANTI-CORRELATED WITH IT
     (found 2026-09-16, run f78ca90856b4). This function used to read only ``item_coverage`` and
@@ -1015,6 +1020,22 @@ def _completion_capture_facts(st: dict, config_path: str) -> dict[str, object]:
         except Exception:  # noqa: BLE001 -- optional evidence may be absent or mid-write
             continue
         records = _action_records(rows)
+        for capture_index, record in enumerate(records):
+            action = record.get("action")
+            if action == "capture_aborted":
+                # The driver emits this token only when a requested Stop abandons a read.
+                facts["capture_aborted_count"] = (
+                    int(facts.get("capture_aborted_count", 0)) + 1
+                )
+            elif (
+                action == "capture"
+                and record.get("items_unavailable")
+                and record.get("items_unavailable_kind") != "no_opener_consumer"
+                and not _capture_window_has_dwell_walk_stop(records, capture_index)
+            ):
+                facts["targeting_refusals"] = (
+                    int(facts.get("targeting_refusals", 0)) + 1
+                )
         for capture_index in range(len(records) - 1, -1, -1):
             record = records[capture_index]
             if record.get("action") != "capture":
@@ -1174,6 +1195,46 @@ def _dropped_row_tallies(lines: list[str]) -> list[str]:
     return out
 
 
+def _driver_closed_log_failures(lines: list[str], run_id: object) -> list[str]:
+    """Recover the terminal DriverClosed cause from older workers' log-only handler.
+
+    Current workers publish ``stop_kind=driver_closed`` and tag the line with their run.
+    Older workers only printed the cause, leaving a stopped snapshot indistinguishable from
+    an operator Stop. Attribute that untagged line only when the next run-tagged line is this
+    run's shutdown save; a new startup banner or another run's tag breaks the association.
+    The ring is contiguous, so an earlier run's failure cannot cross its own save marker.
+    """
+    if not isinstance(run_id, str) or not run_id.strip():
+        return []
+    own = run_id.strip()
+    failures: list[str] = []
+    for index, line in enumerate(lines):
+        if not line.endswith(_DRIVER_CLOSED_STOP_NOTICE):
+            continue
+        tag = _ANY_RUN_TAG_RE.search(line)
+        if tag is not None:
+            belongs = tag.group(1) == own
+        else:
+            belongs = False
+            for following in lines[index + 1 :]:
+                if "Operation Love —" in following:
+                    break
+                following_tag = _ANY_RUN_TAG_RE.search(following)
+                if following_tag is not None:
+                    belongs = (
+                        following_tag.group(1) == own
+                        and _SHUTDOWN_SAVE_RE.search(following) is not None
+                    )
+                    break
+        if belongs:
+            reason = line[: -len(_DRIVER_CLOSED_STOP_NOTICE)]
+            reason = re.sub(r"^\d{2}:\d{2}:\d{2}\s+", "", reason)
+            reason = _sanitize_inline(reason)
+            if reason not in failures:
+                failures.append(reason)
+    return failures
+
+
 def _run_completion_assessment_md(hub_state, config_path: str) -> str:
     """Give a concise, deterministic answer to whether a run finished smoothly.
 
@@ -1286,9 +1347,23 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
         for tally in _dropped_row_tallies(_lines_for_run(recent, run_id))
     )
     stop_kinds = {str(row.get("stop_kind")) for row in app_rows if row.get("stop_kind")}
+    driver_failures = [
+        _sanitize_inline(
+            str(row.get("stop_reason") or "driver session closed unexpectedly")
+        )
+        for row in app_rows
+        if row.get("stop_kind") == "driver_closed"
+    ]
+    if not driver_failures:
+        driver_failures = _driver_closed_log_failures(recent, run_id)
+    if driver_failures:
+        limitations.append(
+            "a driver-session failure interrupted the run: "
+            + "; ".join(f"`{reason}`" for reason in driver_failures)
+        )
     if "opener" in stop_kinds:
         limitations.append("an opener/provider condition stopped an app")
-    elif stop_kinds:
+    elif stop_kinds - {"driver_closed"}:
         limitations.append("a safety or deck condition stopped an app")
     elif "rate_limited" in app_states:
         limitations.append("an app was rate limited")
@@ -1396,6 +1471,7 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
     # line on a HISTORIC openers-off row written before the kind existed -- over-reporting,
     # which every comment in this channel already names as the cheap direction.
     no_opener_consumer = kind == "no_opener_consumer"
+    latest_refusal_reported = False
     if isinstance(unavailable, str) and unavailable and not no_opener_consumer:
         profile = facts.get("items_unavailable_profile")
         who = (
@@ -1442,13 +1518,35 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
                 f"all, so no opener could be targeted at that profile: {detail}"
             )
         else:
+            latest_refusal_reported = True
             limitations.append(
                 f"the latest capture{who} produced no numbered items at all, so no opener "
                 f"could be targeted at that profile: {detail}"
             )
+    run_refusals = facts.get("targeting_refusals", 0)
+    if isinstance(run_refusals, int):
+        other_refusals = run_refusals - int(latest_refusal_reported)
+        if other_refusals > 0:
+            limitations.append(
+                f"targeting was refused in {other_refusals} other capture(s) during this "
+                "run, leaving those profiles with no numbered items"
+            )
+    aborted = facts.get("capture_aborted_count", 0)
+    if isinstance(aborted, int) and aborted > 0:
+        limitations.append(
+            f"the requested Stop abandoned {aborted} in-progress profile read(s) before "
+            "a capture or decision was recorded for those reads"
+        )
     if facts.get("capture_truncated"):
         limitations.append("the latest capture was truncated")
 
+    if driver_failures:
+        return (
+            "- **Outcome: COMPLETED WITH ERRORS** — all workers exited and the store flush "
+            "succeeded before the terminal stopped snapshot, but "
+            + "; ".join(limitations)
+            + "."
+        )
     if not limitations:
         return (
             "- **Outcome: COMPLETED CLEANLY** — all workers exited and the store flush "

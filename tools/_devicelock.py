@@ -18,14 +18,8 @@ do NOT take it: locking them would block a production run for no reason.
 from __future__ import annotations
 
 import sys
-from contextlib import contextmanager
 
 from operation_love import config as cfg_mod
-
-
-@contextmanager
-def _nothing():
-    yield None
 
 
 def holding_the_device(config_path: str | None = None, *, app: str = "hinge"):
@@ -49,11 +43,10 @@ def holding_the_device(config_path: str | None = None, *, app: str = "hinge"):
     keeps the arguments alive for exactly that), this branch is the caller it breaks: it must
     then resolve the device itself rather than pass ``None``.
 
-    A config path that will not load yields an un-held context rather than raising here.  That
-    caller is about to load the same file and report the problem in its own words, and a lock
-    error would replace a precise config message with a vague one.  A caller with no reason to
-    read a config must pass ``None`` instead of a path it does not use, or that escape hatch
-    silently becomes an UNLOCKED run of the command.
+    A config path that will not load still takes the config-independent lock. The caller can
+    report the configuration problem in its own words once it owns the device. Returning an
+    unlocked context would allow a command that recovers or reloads the configuration to drive
+    the phone alongside an active run.
     """
     from operation_love.supervisor import exclusive_android_device
 
@@ -62,7 +55,7 @@ def holding_the_device(config_path: str | None = None, *, app: str = "hinge"):
     try:
         cfg = cfg_mod.load(config_path)
     except Exception:  # noqa: BLE001 -- see docstring: the caller reports this better
-        return _nothing()
+        cfg = None
     return exclusive_android_device(cfg, app)
 
 

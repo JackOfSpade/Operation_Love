@@ -3375,10 +3375,13 @@ def test_no_auto_decision_recorded_when_like_raises_and_snapshot_runs_live():
     assert driver.snapshotted and driver.snapshotted[0][0] is True
 
 
-def test_worker_treats_browser_close_as_graceful_stop():
+def test_worker_retains_driver_close_reason_after_safe_shutdown(capsys):
+    from operation_love.status import RunStatus
+
     driver = ClosedDriver()
     store = FakeStore()
     stop_event = threading.Event()
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
     svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
     Worker(
         "bumble",
@@ -3390,12 +3393,61 @@ def test_worker_treats_browser_close_as_graceful_stop():
         _Pacing(),
         stop_event,
         mode="auto",
+        status=status,
     ).run()
 
     assert stop_event.is_set()
     assert driver.closed
     assert store.labels == []
     assert store.profiles == []
+    app = status.app_view("bumble")["app"]
+    assert app["state"] == "stopped"
+    assert app["stop_kind"] == "driver_closed"
+    assert app["stop_reason"] == "DriverClosed: browser closed"
+    assert app["error"] is None and app["detail"] is None
+    assert "Run run1: bumble: browser closed; Stopping run" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mode", ["auto", "training"])
+def test_driver_close_handler_publishes_without_repainting_closed_transport(mode):
+    from operation_love.status import RunStatus
+
+    class NoClosedOverlayDriver(ClosedDriver):
+        def render_status(self, view):
+            assert not self.closed, "terminal handler must not repaint a closed driver"
+
+    driver = NoClosedOverlayDriver()
+    stop_event = threading.Event()
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode=mode)
+    worker = Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        None,
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        stop_event,
+        mode=mode,
+        status=status,
+    )
+
+    def close_during_loop():
+        status.set_app("bumble", state="scoring", detail="reading profile")
+        driver.close()
+        raise DriverClosed("persistent UHID process exited\nexit code: 1")
+
+    setattr(worker, f"_{mode}_loop", close_during_loop)
+    worker.run()
+
+    app = status.app_view("bumble")["app"]
+    assert stop_event.is_set()
+    assert app["state"] == "stopped" and app["detail"] is None
+    assert app["stop_kind"] == "driver_closed"
+    assert (
+        app["stop_reason"]
+        == "DriverClosed: persistent UHID process exited exit code: 1"
+    )
 
 
 def test_worker_stops_before_writing_auto_decision_after_stop():

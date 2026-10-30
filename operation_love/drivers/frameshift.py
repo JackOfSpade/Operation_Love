@@ -155,6 +155,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from itertools import pairwise
 
 # Imported rather than re-declared: these two are already measured-and-cited in segment.py, and
 # a second copy of either would be free to drift away from the module whose blocks this has to
@@ -747,6 +748,60 @@ def estimate_shift(
         pin_margin=pin_margin_px,
         np=np,
     )
+
+
+def interleaved_strip_matches(
+    frame_a: bytes, frame_b: bytes, *, content_band: tuple[float, float]
+) -> tuple[StripMatch, ...]:
+    """Locate a second, fixed strip grid without authorizing a page displacement.
+
+    A video may leave stable pixels between the ordinary grid's source rows. Video-marker
+    recovery can look there for a separate reciprocal witness, while retaining its original
+    strip evidence and independent marker/card-anchor requirements. Midpoints use the ordinary
+    strip height and matching thresholds; overlapping samples must never become extra quorum
+    votes. This deliberately returns strips, not a ShiftEstimate.
+    """
+    cv2, np = _require_vision()
+    img_a, img_b = _decode_pair(frame_a, frame_b, cv2, np)
+    height, width = img_a.shape
+    r0, r1 = _band_rows(content_band, height)
+    x0, x1 = _CARD_MARGIN_PX, width - _CARD_MARGIN_PX
+    if x1 <= x0 or r1 - r0 < _STRIP_HEIGHT_PX + _MIN_SEARCH_SPAN_PX:
+        raise ShiftEstimationError(
+            "the frame band has no room for the ordinary strip search"
+        )
+    tops = _strip_tops(r0, r1, _STRIP_COUNT, _STRIP_HEIGHT_PX)
+    midpoints = sorted({(a + b) // 2 for a, b in pairwise(tops)} - set(tops))
+    strips = []
+    for y0 in midpoints:
+        y1 = y0 + _STRIP_HEIGHT_PX
+        lo, hi = _strip_search_range(y0, _STRIP_HEIGHT_PX, r0, r1)
+        template = img_a[y0:y1, x0:x1].astype(np.float32)
+        stddev = float(template.std())
+        if stddev < _MIN_STRIP_STDDEV:
+            state, delta, score, runner_up = STRIP_FLAT, None, 0.0, 0.0
+        elif hi - lo < _MIN_SEARCH_SPAN_PX:
+            state, delta, score, runner_up = STRIP_NO_RANGE, None, 0.0, 0.0
+        else:
+            state, delta, score, runner_up = _search_strip(
+                img_b,
+                template,
+                y0=y0,
+                height=_STRIP_HEIGHT_PX,
+                lo=lo,
+                hi=hi,
+                card_x0=x0,
+                card_x1=x1,
+                min_peak=_MIN_PEAK_SCORE,
+                pin_margin=_PIN_MARGIN_PX,
+                exclusion=_RUNNER_UP_EXCLUSION_PX,
+                cv2=cv2,
+                np=np,
+            )
+        strips.append(
+            StripMatch(y0, y1, state, delta, score, runner_up, stddev, (lo, hi))
+        )
+    return tuple(strips)
 
 
 def estimate_shift_with_reverse_recovery(

@@ -253,8 +253,12 @@ function initialHubMode(){ return 'training'; }
 // page happens to load, or re-render, while no run is active.
 let _wasRunning = false;
 let _statusRequest = 0;
+let _statusAppliedRequest = 0;
 let _evalRequest = 0;
+let _evalAppliedRequest = 0;
 let _logsRequest = 0;
+let _logsAppliedRequest = 0;
+let _hubConnectionLost = false;
 let _trainingDataMutationBusy = false;
 let _configReady = false;
 const hubClientId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + '-' + Math.random());
@@ -286,8 +290,9 @@ setInterval(() => hubLifecycle('/api/hub/ping'), 5000);
 // gap only. Nothing here makes a still-hidden tab poll any faster, so a chime heard while the
 // tab stays in the background is still a chime with no text until the operator comes back.
 // Stacking this on top of the interval is safe, and each leg was checked separately: tick() is
-// re-entrancy-safe via the _statusRequest generation counter (a superseded response is
-// discarded, never rendered), the checkpoint repaint is fingerprint-deduped so the no-store
+// re-entrancy-safe via its applied-response counter (a response older than the last applied
+// response is discarded, while an outstanding newer request cannot starve it), the checkpoint
+// repaint is fingerprint-deduped so the no-store
 // review PNGs are NOT re-requested for an unchanged card, and notifyTrainingCheckpoint is
 // one-shot per approval key so an extra poll cannot double-notify.
 function hubWake(){
@@ -415,6 +420,8 @@ function safeCheckpointImageDataUrl(value){
 
 let _trainingCheckpoint = null;
 let _trainingRequest = 0;
+let _trainingAppliedRequest = 0;
+let _trainingPollContext = '';
 let _trainingActionBusy = false;
 let _trainingBusyKey = '';
 let _trainingBusyRequest = 0;
@@ -957,7 +964,8 @@ function renderTrainingCheckpoint(checkpoint, message=''){
     && trainingAlertGestureOffered();
   // A malformed local response or a card that has crossed the action boundary must never
   // turn into either decision.
-  const canDecide = Boolean(ready && image && hasOpener && reviewImageAvailable
+  const connected = typeof _hubConnectionLost === 'undefined' || !_hubConnectionLost;
+  const canDecide = Boolean(connected && ready && image && hasOpener && reviewImageAvailable
     && _trainingImageFailedIndex == null);
   const command = checkpoint.command === 'like' ? 'Like'
     : checkpoint.command === 'dislike' ? 'Dislike' : 'decision';
@@ -1092,9 +1100,12 @@ function renderTrainingFeedback(result, message=''){
 }
 
 async function submitTrainingAction(command){
+  if (typeof _hubConnectionLost !== 'undefined' && _hubConnectionLost) return;
   const checkpoint = _trainingCheckpoint;
   const checkpointKey = trainingCheckpointKey(checkpoint);
   if (!checkpoint || !checkpointKey || _trainingImageFailedIndex != null
+      || checkpoint.pending !== true || checkpoint.phase !== 'waiting_training_decision'
+      || checkpoint.action !== 'ready'
       || trainingActionBusyFor(checkpoint)) return;
   if (!['like', 'dislike'].includes(command) || (!safeCheckpointImageDataUrl(checkpoint.image_data_url)
       || typeof checkpoint.opener !== 'string' || !checkpoint.opener.trim())) return;
@@ -1149,32 +1160,45 @@ async function submitTrainingAction(command){
 }
 
 async function tickTrainingCheckpoint(snap){
+  if (typeof _hubConnectionLost !== 'undefined' && _hubConnectionLost) return;
   const status = snap && snap.status;
   const appStatus = selectRunApps(status).find(a => a && a.mode === 'training') || null;
   const runId = status && status.run_id;
   if (!snap || !appStatus || !runId) {
-    _trainingRequest += 1; // discard a late response for a completed/replaced run
+    _trainingAppliedRequest = ++_trainingRequest;
+    _trainingPollContext = '';
     renderTrainingCheckpoint(null);
     return;
   }
   if (status.stopping) {
-    _trainingRequest += 1;
+    _trainingAppliedRequest = ++_trainingRequest;
+    _trainingPollContext = '';
     renderTrainingFeedback(null,
       'Run is stopping; no new choice is available. Any already-started decision is finishing and being recorded.');
     return;
   }
   const request = ++_trainingRequest;
+  const context = JSON.stringify([runId, appStatus.app || '', !!snap.running]);
+  if (context !== _trainingPollContext) {
+    // A run/app replacement or completion invalidates its predecessor immediately, even
+    // before this context's first response lands. Same-context polls still progress in order.
+    _trainingPollContext = context;
+    _trainingAppliedRequest = request;
+    renderTrainingCheckpoint(null);
+  }
   try {
     const payload = await getJSON('/api/training/checkpoint?run_id=' + encodeURIComponent(runId)
       + '&app=' + encodeURIComponent(appStatus.app || ''));
-    if (request !== _trainingRequest) return;
+    if (request < _trainingAppliedRequest) return;
+    _trainingAppliedRequest = request;
     const checkpoint = activeTrainingCheckpoint(payload, runId, appStatus.app);
     const result = latestTrainingResult(payload, runId, appStatus.app);
     if (snap.running && checkpoint) renderTrainingCheckpointFromPoll(checkpoint);
     else if (result) renderTrainingFeedback(result);
     else renderTrainingCheckpoint(null);
   } catch (_error) {
-    if (request === _trainingRequest) {
+    if (request >= _trainingAppliedRequest) {
+      _trainingAppliedRequest = request;
       renderTrainingCheckpoint(_trainingCheckpoint,
         _trainingCheckpoint ? 'Could not refresh decision status. Retry your choice or Stop the run.' : '');
     }
@@ -1220,6 +1244,8 @@ function renderRunStatus(snap){
     if(state === 'blocked' && a.stop_kind === 'cold_relaunch_recovery')
       return box('idle', `${a.app}: stopped — could not recover after the app relaunched`, a.stop_reason);
     if(state === 'blocked') return box('idle', `${a.app}: stopped — deck blocked`, a.stop_reason);
+    if(state === 'stopped' && a.stop_kind === 'driver_closed')
+      return box('idle', `${a.app}: stopped — app or device connection closed`, a.stop_reason);
     // Before the cold-start branch: this stop also carries last_decision 'defer', but more
     // Training cannot fix it. stop_reason names the missing count and the backfill command.
     if(state === 'stopped' && a.stop_kind === 'feature_set_incomplete')
@@ -1285,15 +1311,26 @@ async function tick(){
   const request = ++_statusRequest;
   try {
     const snap = await getJSON('/api/status');
-    if (request !== _statusRequest) return;
+    if (request < _statusAppliedRequest) return;
+    _statusAppliedRequest = request;
     clearHubConnectionLost();
     renderGlobal(snap); renderRunStatus(snap); tickTrainingCheckpoint(snap);
   } catch(_error){
-    if (request === _statusRequest) renderHubConnectionLost();
+    if (request < _statusAppliedRequest) return;
+    _statusAppliedRequest = request;
+    renderHubConnectionLost();
   }
 }
 
 function renderHubConnectionLost(){
+  _hubConnectionLost = true;
+  if (typeof _trainingRequest !== 'undefined') {
+    _trainingAppliedRequest = ++_trainingRequest;
+    _trainingPollContext = '';
+  }
+  // Retire the capability as well as its DOM controls: image callbacks and an in-flight
+  // action's retry path must not resurrect a stale choice while the Hub reconnects.
+  if (typeof renderTrainingCheckpoint === 'function') renderTrainingCheckpoint(null);
   const message = 'Local hub disconnected. The last displayed run and decision state is stale; do not repeat a physical action until storage is reconciled.';
   const error = $('#err');
   if (error) error.textContent = `error: ${message}`;
@@ -1308,22 +1345,13 @@ function renderHubConnectionLost(){
     const button = $(selector); if (button) button.disabled = true;
   }
   const hint = $('#trainingactionhint'); if (hint) hint.textContent = message;
-  // THE DISABLE ABOVE HAS TO BE UNDONE ON THE NEXT SUCCESSFUL POLL, and only the render
-  // fingerprint can do it. This function disables #traininglike/#trainingdislike directly, but
-  // the ONLY code that rebuilds those buttons is renderTrainingCheckpoint, and its poll entry
-  // point returns early whenever the checkpoint fingerprint is unchanged -- which is exactly the
-  // case while a checkpoint sits waiting for the operator, the state the lockout happens in. So
-  // one transient /api/status failure left the decision buttons dead and the hint reading "Local
-  // hub disconnected" until the page was reloaded, with the run still live and waiting.
-  // Invalidate HERE, where the lockout is applied, not in clearHubConnectionLost(): that runs on
-  // EVERY successful poll, so clearing there rebuilt the panel once a second and re-requested
-  // both no-store review PNGs -- the flood the fingerprint exists to prevent -- and re-armed the
-  // 2000ms image retry faster than it could ever fire. #start/#stop already recover via
-  // renderGlobal; this is the case that was missed.
+  // The first fresh checkpoint after a successful status poll must rebuild the retired card.
+  // Invalidate once on loss so ordinary unchanged polls still retain their images and timers.
   if (typeof _trainingPollRenderSignature !== 'undefined') _trainingPollRenderSignature = '';
 }
 
 function clearHubConnectionLost(){
+  _hubConnectionLost = false;
   const error = $('#err');
   if (error && error.textContent.startsWith('error: Local hub disconnected.')) error.textContent = '';
 }
@@ -1437,7 +1465,9 @@ async function tickEval(){
   const request = ++_evalRequest;
   try {
     const evaluation = await getJSON('/api/eval');
-    if (request === _evalRequest) renderEval(evaluation);
+    if (request < _evalAppliedRequest) return;
+    _evalAppliedRequest = request;
+    renderEval(evaluation);
   } catch(_error){}
 }
 
@@ -1446,7 +1476,8 @@ async function tickLogs(){
   const request = ++_logsRequest;
   try {
     const r = await getJSON('/api/logs'); const el = $('#logs');
-    if (request !== _logsRequest) return;
+    if (request < _logsAppliedRequest) return;
+    _logsAppliedRequest = request;
     const stick = _nearBottom(el);                 // only auto-scroll if user is already at the bottom
     el.textContent = (r.lines||[]).join('\n');
     $('#loghint').textContent = (r.lines||[]).length + ' lines';

@@ -1048,6 +1048,59 @@ def _adjusted_navigation_anchor(
     return following, page_offset + measured
 
 
+def _carried_park_after_correction(
+    driver: HingeDriver,
+    index,
+    *,
+    frame: bytes,
+    rows: tuple[int, int],
+    point: tuple[int, int],
+    shift_px: int,
+) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    """Where a centring correction left the card, when navigation could not find it again.
+
+    None means the landing shows the sticky header the index was built from, so the next pass
+    simply re-navigates.  Otherwise the card's rows and heart point are carried across the
+    correction's measured shift, and the caller re-proves them on `frame`.
+
+    RE-NAVIGATING FROM A LANDING WITHOUT THE HEADER UNDOES THE CORRECTION.  At the deck top the
+    identity band shows Hinge's filter chips, so `navigate_to_item` takes its one bounded
+    identity-recovery scroll, always exactly `_READ_SCROLL_FRAC_MIN`: a 240px drag delivering
+    219px.  A first card has about 110px of zone margin below the top (rows 553..1527, -0.089),
+    so that recovery re-parks it at -0.210 however large the correction was, and every further
+    correction clamps at the top and repeats the cycle.  Live on 10.9.0 and 10.10.0, that one
+    gesture pair spent the whole budget on 4 of 4 refusals and a real Like for each.
+    Between the top and the stuck toolbar the band reads a partly collapsed header, which measured
+    5.9 to 34.8 from the same profile's sticky header at 19..109px: a mismatch, not a recovery.
+    So the rows inside the zone are exactly the rows the entry gate cannot accept.
+
+    CARRYING IS THE SAME CARD, NOT A RE-IDENTIFIED ONE (owner rule 2026-08-11).  The navigator
+    proved identity and the ordinal on the frame this correction left, one measured gesture ago,
+    and `_verified_target_frame_proof` still has to find exactly one card at exactly the carried
+    rows with exactly one heart at exactly the carried point.  It is the rule the still-photo
+    probe's residual already lives by.  A landing whose identity could not be compared at all, or
+    an index with no fingerprint, stays with the navigator, which owns those refusals.
+    """
+    reference = getattr(index, "identity", None)
+    if reference is None or not reference.known:
+        return None
+    try:
+        verdict = compare_profile_identity(
+            frame,
+            reference,
+            identity_band=driver.identity_band,
+            match_max_dist=_UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST,
+        )
+    except IdentityError:
+        return None
+    if verdict.matched:
+        return None
+    return (
+        (rows[0] - shift_px, rows[1] - shift_px),
+        (point[0], point[1] - shift_px),
+    )
+
+
 @dataclass(frozen=True)
 class _TargetFrameProof:
     """What one exact-frame target screen actually established, carried to whoever claims it.
@@ -4505,6 +4558,9 @@ def _capture_one_profile_unattended(
         review_before = None
         adjustment_count = 0
         center_offsets_tried: list[float] = []
+        # Set only by a centring correction whose landing navigation could not accept.  The next
+        # pass then re-proves the card at these rows and point instead of navigating.
+        carried_park = None
 
         def _apply_bounded_centering_correction(
             center_offset: float,
@@ -4571,22 +4627,23 @@ def _capture_one_profile_unattended(
 
         while True:
             try:
-                walk_index = hinge_mod.HingeDriver._rebase_item_index_for_anchor(
-                    index, navigation_page_offset - original_reference_offset
-                )
-                if walk_index is None:
-                    raise _CaptureAbort(
-                        "pre-heart navigation index cannot be rebased to its measured anchor"
+                if carried_park is None:
+                    walk_index = hinge_mod.HingeDriver._rebase_item_index_for_anchor(
+                        index, navigation_page_offset - original_reference_offset
                     )
-                heart_ordinal = payload.item(item_number).heart_ordinal
-                navigation_index = walk_index.translation.index(heart_ordinal) + 1
-                target = navigate_to_item(
-                    driver,
-                    walk_index,
-                    navigation_index,
-                    entry_reference=navigation_frame,
-                    identity_match_max_dist=_UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST,
-                )
+                    if walk_index is None:
+                        raise _CaptureAbort(
+                            "pre-heart navigation index cannot be rebased to its measured anchor"
+                        )
+                    heart_ordinal = payload.item(item_number).heart_ordinal
+                    navigation_index = walk_index.translation.index(heart_ordinal) + 1
+                    target = navigate_to_item(
+                        driver,
+                        walk_index,
+                        navigation_index,
+                        entry_reference=navigation_frame,
+                        identity_match_max_dist=_UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST,
+                    )
             except (
                 ItemCropError,
                 ValueError,
@@ -4687,13 +4744,22 @@ def _capture_one_profile_unattended(
                     f"item {item_number}: {type(exc).__name__}: {exc}",
                 )
                 raise skip_before_heart(retry, identity) from exc
-            navigation_frame = target_pre = target.frame
-            navigation_page_offset = target.page_offset
-            # Default to the navigator's own point/rows.  Both are overwritten below only when
-            # the still-photo probe's return leg leaves a measured page residual; passing them
+            if carried_park is None:
+                navigation_frame = target_pre = target.frame
+                navigation_page_offset = target.page_offset
+                parked_rows = target.block_frame_rows
+                parked_point = target.point
+            else:
+                # The correction's own measured landing is already the navigation anchor.
+                target_pre = navigation_frame
+                parked_rows, parked_point = carried_park
+                carried_park = None
+            parked_page_offset = navigation_page_offset
+            # Default to the parked point/rows.  Both are overwritten below only when the
+            # still-photo probe's return leg leaves a measured page residual; passing them
             # through unconditionally from here on keeps the residual == 0 path a no-op.
-            tap_target_point = target.point
-            moved_rows = target.block_frame_rows
+            tap_target_point = parked_point
+            moved_rows = parked_rows
             try:
                 target_proof = _verified_target_frame_proof(
                     driver,
@@ -4702,6 +4768,8 @@ def _capture_one_profile_unattended(
                     content_band=content_band,
                     like_template=like_template,
                     like_threshold=like_threshold,
+                    expected_rows=moved_rows,
+                    expected_point=tap_target_point,
                 )
             except _CaptureAbort as exc:
                 retry = _PreActionProfileRetry(
@@ -4729,14 +4797,20 @@ def _capture_one_profile_unattended(
             # `navigate_to_item` is the already-tested re-anchoring path, and rows, offset and
             # heart are all measured again from the corrected position.  That is also why an
             # overcorrection needs no clamp -- the deck stops at the top, and the next pass
-            # simply measures whatever is really on the screen.
+            # simply measures whatever is really on the screen.  The one exception is a landing
+            # the navigator's entry gate cannot accept; see `_carried_park_after_correction`.
             center_offset = _parked_card_center_offset(
-                target, target_proof, frame=target_pre, content_band=content_band
+                target,
+                target_proof,
+                frame=target_pre,
+                content_band=content_band,
+                rows=moved_rows,
             )
             if (
                 center_offset is not None
                 and abs(center_offset) > STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
             ):
+                page_offset_before = navigation_page_offset
                 adjustment_count, navigation_frame, navigation_page_offset = (
                     _apply_bounded_centering_correction(
                         center_offset,
@@ -4746,6 +4820,14 @@ def _capture_one_profile_unattended(
                         center_offsets_tried=center_offsets_tried,
                         page_offset=navigation_page_offset,
                     )
+                )
+                carried_park = _carried_park_after_correction(
+                    driver,
+                    index,
+                    frame=navigation_frame,
+                    rows=moved_rows,
+                    point=tap_target_point,
+                    shift_px=navigation_page_offset - page_offset_before,
                 )
                 continue
             try:
@@ -4767,7 +4849,7 @@ def _capture_one_profile_unattended(
             # page. Keep its measured return frame/offset even when only chrome bytes changed.
             navigation_frame = still_photo_proof.action_frame
             navigation_page_offset = (
-                target.page_offset + still_photo_proof.page_residual_px
+                parked_page_offset + still_photo_proof.page_residual_px
             )
             if still_photo_proof.action_frame != target_pre:
                 # THE GATE IS THE BYTES CHANGING, NOT THE RESIDUAL.  `action_frame` can differ
@@ -4791,10 +4873,10 @@ def _capture_one_profile_unattended(
                 target_pre = still_photo_proof.action_frame
                 if residual:
                     moved_rows = (
-                        target.block_frame_rows[0] - residual,
-                        target.block_frame_rows[1] - residual,
+                        parked_rows[0] - residual,
+                        parked_rows[1] - residual,
                     )
-                    tap_target_point = (target.point[0], target.point[1] - residual)
+                    tap_target_point = (parked_point[0], parked_point[1] - residual)
                 try:
                     target_proof = _verified_target_frame_proof(
                         driver,
@@ -4822,6 +4904,7 @@ def _capture_one_profile_unattended(
                     center_offset is not None
                     and abs(center_offset) > STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
                 ):
+                    page_offset_before = navigation_page_offset
                     adjustment_count, navigation_frame, navigation_page_offset = (
                         _apply_bounded_centering_correction(
                             center_offset,
@@ -4831,6 +4914,14 @@ def _capture_one_profile_unattended(
                             center_offsets_tried=center_offsets_tried,
                             page_offset=navigation_page_offset,
                         )
+                    )
+                    carried_park = _carried_park_after_correction(
+                        driver,
+                        index,
+                        frame=navigation_frame,
+                        rows=moved_rows,
+                        point=tap_target_point,
+                        shift_px=navigation_page_offset - page_offset_before,
                     )
                     continue
             if review_gate is None:

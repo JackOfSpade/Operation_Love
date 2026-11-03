@@ -2702,6 +2702,348 @@ def test_centring_corrections_share_the_reviewer_adjustment_budget(
     assert driver.taps == []
 
 
+def _carry_scenario(monkeypatch, *, parks, shifts, verdict, residuals=()):
+    """The pre-heart loop over the live geometry: a 2400px frame and a 1800px band, with each
+    stub honouring `expected_rows`/`expected_point` the way the real proof does.
+
+    `parks` are what each navigation returns (running out fails the test), `shifts` each
+    corrective gesture's measured displacement, `verdict` the identity state of a landing, and
+    `residuals` what each still-photo proof's probe leaves behind.
+    """
+    driver, pass_calls, _send_calls = _unattended_single_item_fixtures(
+        monkeypatch, extra_screencaps=len(shifts)
+    )
+    reference = ProfileIdentity(
+        (1,), _IDENTITY_BAND, (64, 16), 0, 20.0, "known", agreeing_frames=2
+    )
+    monkeypatch.setattr(
+        cal,
+        "build_item_index",
+        lambda *_a, **_kw: SimpleNamespace(
+            usable=True,
+            translation=(1,),
+            complete=False,
+            offsets=(0,),
+            identity=reference,
+        ),
+    )
+    monkeypatch.setattr(cal, "_frame_height_px", lambda _frame: 2400)
+    remaining_parks = iter(parks)
+    navigations: list[tuple[int, int]] = []
+
+    def navigate(*_a, **_kw):
+        rows, point = next(remaining_parks)
+        navigations.append(rows)
+        return SimpleNamespace(
+            frame=b"target-pre", point=point, block_frame_rows=rows, page_offset=0
+        )
+
+    monkeypatch.setattr(cal, "navigate_to_item", navigate)
+    remaining_shifts = iter(shifts)
+    driver._measured_page_shift = lambda _before, _after: next(remaining_shifts)
+    compared: list[bytes] = []
+
+    def compare(frame, _identity, **_kw):
+        compared.append(frame)
+        return SimpleNamespace(matched=verdict == "matched")
+
+    monkeypatch.setattr(cal, "compare_profile_identity", compare)
+    proved: list[tuple[bytes, tuple[int, int], tuple[int, int]]] = []
+
+    def prove_target(_driver, _target, *, frame, expected_rows, expected_point, **_kw):
+        proved.append((frame, tuple(expected_rows), tuple(expected_point)))
+        return cal._TargetFrameProof(
+            block=SimpleNamespace(
+                x0=53,
+                y0=expected_rows[0],
+                x1=1027,
+                y1=expected_rows[1],
+                hearts=(expected_point,),
+            ),
+            frame_sha256=cal._sha256(frame),
+            mute_control_absent=True,
+            heart_visible=True,
+        )
+
+    monkeypatch.setattr(cal, "_verified_target_frame_proof", prove_target)
+    remaining_residuals = iter(residuals)
+    dwelt: list[tuple[int, int]] = []
+
+    def prove_still(_driver, *, frame, block):
+        dwelt.append((block.y0, block.y1))
+        residual = next(remaining_residuals, 0)
+        action_frame = frame if not residual else b"probe-return-%d" % len(dwelt)
+        return cal._StillPhotoProof(
+            action_frame_sha256=cal._sha256(action_frame),
+            pre_probe_frame_sha256=cal._sha256(frame),
+            dwell_frame_sha256s=(cal._sha256(frame), cal._sha256(b"dwell")),
+            dwell_span_s=6.0,
+            still_photo_verified=True,
+            reattach_frame_sha256s=(
+                cal._sha256(action_frame),
+                cal._sha256(b"reattach"),
+            ),
+            reattach_dwell_span_s=6.0,
+            page_residual_px=residual,
+            action_frame=action_frame,
+        )
+
+    monkeypatch.setattr(cal, "_verified_still_photo_proof", prove_still)
+    monkeypatch.setattr(
+        cal,
+        "_fresh_reviewed_target_point",
+        lambda _driver, _target, *, expected_point, **_kw: expected_point,
+    )
+    rebased_by: list[int] = []
+
+    def rebase(index, page_shift_px):
+        rebased_by.append(page_shift_px)
+        return index
+
+    monkeypatch.setattr(
+        cal.hinge_mod.HingeDriver,
+        "_rebase_item_index_for_anchor",
+        staticmethod(rebase),
+    )
+    return SimpleNamespace(
+        driver=driver,
+        pass_calls=pass_calls,
+        navigations=navigations,
+        rebased_by=rebased_by,
+        compared=compared,
+        proved=proved,
+        dwelt=dwelt,
+    )
+
+
+def _capture_carry_scenario(tmp_path, scenario, *, gate=None):
+    gate = _RecordingGate() if gate is None else gate
+    cal._capture_one_profile_unattended(
+        scenario.driver,
+        tmp_path,
+        ordinal=1,
+        frame_counter=0,
+        frames_meta=[],
+        used_profile_ids=set(),
+        review_gate=gate,
+        send_like=False,
+    )
+    return gate
+
+
+# The recorded 10.10.0 first card: rows 553..1527 and heart 1437 at the deck top (-0.089), and
+# 219px below it, where the navigator's identity recovery parks it, 334..1308 (-0.210).
+_LIVE_TOP_ROWS = (553, 1527)
+_LIVE_TOP_POINT = (939, 1437)
+_LIVE_RECOVERED_ROWS = (334, 1308)
+_LIVE_RECOVERED_POINT = (939, 1218)
+
+
+@pytest.mark.parametrize("landing_identity", ["top_unknown", "collapsing_mismatch"])
+def test_a_correction_landing_navigation_cannot_accept_carries_the_card_into_its_dwell(
+    monkeypatch, tmp_path, landing_identity
+):
+    """THE LIVE FAILURE (10.9.0 and 10.10.0: 4 of 4 refusals, each a real Like), pinned.
+
+    A correction from -0.210 clamps at the deck top, which IS inside the zone at -0.089.  Handing
+    that landing back to `navigate_to_item` re-parked the card at -0.210, because identity is not
+    readable there.  The only park this stub offers is the first one, so any second navigation
+    fails the test: the card has to be dwelt and hearted at the rows it was measured to.
+    """
+    scenario = _carry_scenario(
+        monkeypatch,
+        parks=[(_LIVE_RECOVERED_ROWS, _LIVE_RECOVERED_POINT)],
+        shifts=[-219],
+        verdict=landing_identity,
+    )
+
+    gate = _capture_carry_scenario(tmp_path, scenario)
+
+    assert scenario.navigations == [_LIVE_RECOVERED_ROWS]
+    directions = [direction for direction, _f, _x in scenario.driver.scrolls]
+    assert directions[0] == "up" and directions.count("up") == 1
+    # The identity question was asked of the landing, not of the frame the card left.
+    assert scenario.compared[0] == scenario.proved[1][0] != scenario.proved[0][0]
+    assert scenario.proved[1][1:] == (_LIVE_TOP_ROWS, _LIVE_TOP_POINT)
+    assert scenario.dwelt == [_LIVE_TOP_ROWS]
+    plan = next(p for state, p in gate.checkpoints if state == "target_heart_visible")
+    assert plan["point"] == list(_LIVE_TOP_POINT)
+    assert scenario.driver.taps == [_LIVE_TOP_POINT]
+
+
+def test_a_correction_landing_that_shows_the_sticky_header_still_renavigates(
+    monkeypatch, tmp_path
+):
+    """The mirror of the carry: a landing the entry gate accepts keeps the stronger path, where
+    rows, offset, heart and count are all measured again by the navigator."""
+    scenario = _carry_scenario(
+        monkeypatch,
+        parks=[
+            (_LIVE_RECOVERED_ROWS, _LIVE_RECOVERED_POINT),
+            (_LIVE_TOP_ROWS, _LIVE_TOP_POINT),
+        ],
+        shifts=[-219],
+        verdict="matched",
+    )
+
+    _capture_carry_scenario(tmp_path, scenario)
+
+    assert scenario.navigations == [_LIVE_RECOVERED_ROWS, _LIVE_TOP_ROWS]
+    assert scenario.driver.taps == [_LIVE_TOP_POINT]
+
+
+def test_a_probe_residual_after_a_carry_is_measured_from_the_carried_park(
+    monkeypatch, tmp_path
+):
+    """The -0.151 refusal: a probe residual leaves the card just out of zone, its correction clamps
+    at the top, and the second probe leaves a residual of its own.  The first carry starts from
+    the probe's rows and the second residual from the carried rows; reading either off the
+    navigator's stale `target` would hunt for the card at rows it no longer occupies, or dwell
+    it somewhere it never was.
+    """
+    scenario = _carry_scenario(
+        monkeypatch,
+        parks=[((500, 1474), (939, 1384))],  # -0.118, 53px below the deck top
+        shifts=[-111],
+        verdict="top_unknown",
+        residuals=[58, 37],  # 111px below the top (-0.151), then 37px (-0.109)
+    )
+
+    gate = _capture_carry_scenario(tmp_path, scenario)
+
+    assert scenario.navigations == [(500, 1474)]
+    assert scenario.dwelt == [(500, 1474), _LIVE_TOP_ROWS]
+    assert scenario.proved[-1][1:] == ((516, 1490), (939, 1400))
+    plan = next(p for state, p in gate.checkpoints if state == "target_heart_visible")
+    assert plan["point"] == [939, 1400]
+    assert scenario.driver.taps == [(939, 1400)]
+
+
+def test_a_second_correction_carries_from_where_the_first_one_left_the_card(
+    monkeypatch, tmp_path
+):
+    """An under-delivered correction can land out of zone and short of the top.  The next one has
+    to start from the carried rows, never from the rows the navigator reported two gestures ago."""
+    scenario = _carry_scenario(
+        monkeypatch,
+        parks=[(_LIVE_RECOVERED_ROWS, _LIVE_RECOVERED_POINT)],
+        shifts=[-100, -119],  # 119px below the top (-0.155), then the top itself
+        verdict="collapsing_mismatch",
+    )
+
+    _capture_carry_scenario(tmp_path, scenario)
+
+    assert scenario.navigations == [_LIVE_RECOVERED_ROWS]
+    assert scenario.dwelt == [_LIVE_TOP_ROWS]
+    assert scenario.driver.taps == [_LIVE_TOP_POINT]
+
+
+def test_a_reviewer_retry_after_a_carry_renavigates_from_the_measured_position(
+    monkeypatch, tmp_path
+):
+    """A carry covers one pass.  A reviewer's RETRY must reach the navigator again, anchored on the
+    page position the correction AND the probe's residual really left, not the navigator's old
+    offset, which would count from a page row the card has already moved away from."""
+
+    class _RetryOnceGate(_RecordingGate):
+        def checkpoint(self, frame, *, claimed_state, action_plan):
+            first = not self.checkpoints
+            verdict = super().checkpoint(
+                frame, claimed_state=claimed_state, action_plan=action_plan
+            )
+            return {"decision": "retry"} if first else verdict
+
+    scenario = _carry_scenario(
+        monkeypatch,
+        parks=[
+            (_LIVE_RECOVERED_ROWS, _LIVE_RECOVERED_POINT),
+            ((516, 1490), (939, 1400)),
+        ],
+        shifts=[-219],
+        verdict="top_unknown",
+        residuals=[37],
+    )
+
+    _capture_carry_scenario(tmp_path, scenario, gate=_RetryOnceGate())
+
+    assert scenario.navigations == [_LIVE_RECOVERED_ROWS, (516, 1490)]
+    assert scenario.rebased_by == [0, -219 + 37]
+    assert scenario.driver.taps == [(939, 1400)]
+
+
+def test_a_carried_card_that_never_reaches_the_zone_still_exhausts_the_shared_budget(
+    monkeypatch, tmp_path
+):
+    """Carrying buys no extra gestures and no looser gate: a card the deck top holds out of zone
+    is refused by the same budget, naming the offsets it really measured, and is never dwelt."""
+    budget = cal._HYBRID_MAX_ADJUSTMENTS_PER_ACTION
+    scenario = _carry_scenario(
+        monkeypatch,
+        parks=[(_LIVE_RECOVERED_ROWS, _LIVE_RECOVERED_POINT)],
+        shifts=[0] * budget,
+        verdict="top_unknown",
+    )
+    monkeypatch.setattr(
+        cal,
+        "_skip_automated_profile_before_heart",
+        lambda _driver, **kwargs: {
+            "reason_code": kwargs["reason"].code,
+            "reason_detail": kwargs["reason"].detail,
+        },
+    )
+
+    with pytest.raises(cal._ProfileSkipped) as excinfo:
+        _capture_carry_scenario(tmp_path, scenario)
+
+    detail = excinfo.value.record["reason_detail"]
+    assert " then ".join(["-0.211"] * (budget + 1)) in detail
+    assert f"limit {cal.STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC:.3f}" in detail
+    assert scenario.navigations == [_LIVE_RECOVERED_ROWS]
+    assert scenario.dwelt == []
+    assert scenario.driver.taps == []
+
+
+def test_a_correction_landing_navigation_must_judge_itself_is_never_carried(
+    monkeypatch,
+):
+    """Only a compared, unmatched landing is carried.  An index with no fingerprint, and a band
+    that could not be read at all, are the navigator's refusals to make."""
+    driver = SimpleNamespace(identity_band=_IDENTITY_BAND)
+    carry = dict(frame=b"landing", rows=(10, 20), point=(5, 15), shift_px=-3)
+    assert (
+        cal._carried_park_after_correction(
+            driver, SimpleNamespace(identity=None), **carry
+        )
+        is None
+    )
+    unknown = ProfileIdentity(
+        None, _IDENTITY_BAND, (64, 16), None, None, "no header seen"
+    )
+    assert (
+        cal._carried_park_after_correction(
+            driver, SimpleNamespace(identity=unknown), **carry
+        )
+        is None
+    )
+
+    def unreadable(*_a, **_kw):
+        raise cal.IdentityError("the band could not be read")
+
+    monkeypatch.setattr(cal, "compare_profile_identity", unreadable)
+    known = SimpleNamespace(identity=SimpleNamespace(known=True))
+    assert cal._carried_park_after_correction(driver, known, **carry) is None
+
+    monkeypatch.setattr(
+        cal,
+        "compare_profile_identity",
+        lambda *_a, **_kw: SimpleNamespace(matched=False),
+    )
+    assert cal._carried_park_after_correction(driver, known, **carry) == (
+        (13, 23),
+        (5, 18),
+    )
+
+
 def test_a_card_parked_inside_the_autoplay_zone_is_never_scrolled_before_its_proof(
     monkeypatch, tmp_path
 ):

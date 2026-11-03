@@ -1628,6 +1628,83 @@ def test_an_all_exception_enumeration_names_the_exception_in_its_skip_detail(
     assert "index not yet built" not in detail
 
 
+@pytest.mark.parametrize("identity_state", ["known", "unknown"])
+def test_an_unsettled_read_scroll_skips_only_a_profile_it_can_identify(
+    monkeypatch, tmp_path, identity_state
+):
+    """A playing video can keep a read scroll from proving parked. Before any heart that costs
+    this one profile, not the session, but a skip still requires a known current identity."""
+
+    class _Driver:
+        identity_band = _IDENTITY_BAND
+        content_band = _CONTENT_BAND
+        dwell_s = 0.0
+        adb = None
+
+        def _template(self, _name):
+            return object()
+
+        def _scroll_down_one(self, _frac, _x_frac):
+            pass
+
+    identity = ProfileIdentity(
+        (1,) if identity_state == "known" else None,
+        _IDENTITY_BAND,
+        (64, 16),
+        0,
+        20.0,
+        identity_state,
+        agreeing_frames=2,
+    )
+
+    def never_parks(_driver):
+        raise cal._ReadScrollUnsettled("did not park: a video filled the content band")
+
+    skips = []
+
+    def record_skip(_driver, **kwargs):
+        skips.append(kwargs["reason"])
+        return {"reason_code": kwargs["reason"].code}
+
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_a: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(
+        cal, "_rewind_automated_profile_to_confirmed_top", lambda *_a, **_kw: b"top"
+    )
+    monkeypatch.setattr(cal, "capture_profile_identity", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(
+        cal,
+        "build_item_index",
+        lambda *_a, **_kw: (_ for _ in ()).throw(cal.ItemIndexError("incomplete")),
+    )
+    monkeypatch.setattr(
+        cal,
+        "_plan_card_scroll",
+        lambda *_a, **_kw: (SimpleNamespace(frac=0.1, x_frac=0.5), None),
+    )
+    monkeypatch.setattr(cal, "_settled_read_scroll_frame", never_parks)
+    monkeypatch.setattr(cal, "_skip_automated_profile_before_heart", record_skip)
+
+    expected = cal._ProfileSkipped if identity_state == "known" else cal._CaptureAbort
+    with pytest.raises(expected):
+        cal._capture_one_profile_unattended(
+            _Driver(),
+            tmp_path,
+            ordinal=1,
+            frame_counter=0,
+            frames_meta=[],
+            used_profile_ids=set(),
+            review_gate=None,
+            send_like=False,
+        )
+
+    if identity_state == "known":
+        assert skips[0].code == "target_unavailable_or_incomplete_index"
+        assert "did not park" in skips[0].detail
+    else:
+        assert skips == []
+
+
 def test_pre_action_skip_meeting_the_unsupported_layout_escalates_instead_of_killing_the_session(
     monkeypatch, tmp_path
 ):

@@ -263,8 +263,9 @@ _MAX_UNSETTLED_TOP_REPROBES = 3
 # sticky name header at 12.281. Keep this separate from the general read/rewind ceilings: it is
 # only the bounded proof that a terminal Pass reached a distinct next profile. Before the second
 # gesture the helper below re-proves the ordinary Like+Pass deck, so a modal or composer can
-# never consume the extra allowance.
-_MAX_POST_ADVANCE_STICKY_SCROLLS = 2
+# never consume the extra allowance. Hinge 10.10.0 rested two consecutive scrolls inside the header
+# crossfade (measured live 2026-11-03: 6.812), and that abort would discard every banked profile.
+_MAX_POST_ADVANCE_STICKY_SCROLLS = 4
 # A low-distance sticky-header proof can be a late render rather than a failed advance.  At most
 # three *read-only* looks let one transitional framebuffer fall away while still requiring two
 # adjacent, independently-safe candidates before accepting it.  This is deliberately separate
@@ -679,6 +680,14 @@ class _CaptureAbort(RuntimeError):
     evidence exists before exiting non-zero."""
 
 
+class _ReadScrollUnsettled(_CaptureAbort):
+    """A read-scroll frame never proved parked, as a large playing video can cause.
+
+    Measured 2026-11-03 on Hinge 10.10.0: a video's own pixels left the page with too few
+    trustworthy strips to measure, and that one profile ended the whole session.
+    """
+
+
 class _RestartProfile(RuntimeError):
     """A reviewer requested a fresh, driver-owned rewind before a pending action."""
 
@@ -1022,7 +1031,7 @@ def _settled_read_scroll_frame(driver: HingeDriver) -> bytes:
             return current
         prior = current
     detail = refusals[-1] if refusals else "frames never became byte-stable"
-    raise _CaptureAbort(
+    raise _ReadScrollUnsettled(
         "card-enumeration scroll did not park within the bounded "
         f"{_MAX_READ_SCROLL_SETTLE_PROBES}-comparison settle window: {detail}"
     )
@@ -4452,7 +4461,18 @@ def _capture_one_profile_unattended(
             ) from exc
         time.sleep(human_delay(driver.dwell_s))
         driver._scroll_down_one(step.frac, step.x_frac)
-        frame = _settled_read_scroll_frame(driver)
+        try:
+            frame = _settled_read_scroll_frame(driver)
+        except _ReadScrollUnsettled as exc:
+            # Nothing has been hearted, so this profile is unusable rather than unsafe. The skip
+            # re-proves a confirmed top and clears its own reviewer checkpoint before advancing.
+            # Without a known identity there is nothing safe to skip, so that still aborts.
+            if not identity.known:
+                raise
+            retry = _PreActionProfileRetry(
+                "target_unavailable_or_incomplete_index", str(exc)
+            )
+            raise skip_before_heart(retry, identity) from exc
         card_frames.append(frame)
         staged_frames.append(
             (frame, "card_scroll", None, datetime.now(timezone.utc).isoformat())

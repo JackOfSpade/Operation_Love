@@ -690,8 +690,8 @@ Worker/hub/store or make a real profile request. After installing the measured c
   transported.
 - **Item 1 inline composer identity:** heart item 1 without an intervening scroll. Hinge's
   inline composer was introduced in 9.134 and was measured on the historical 10.0.1 build. The
-  live build is now 10.9.0 on device `33111JEHN04475` (1080x2400); the superseded calibrations
-  remain immutable audit evidence, while the separately measured 10.9.0 schema-v3
+  live build is now 10.10.0 on device `33111JEHN04475` (1080x2400); the superseded calibrations
+  remain immutable audit evidence, while the separately measured 10.10.0 schema-v3
   hybrid AI-reviewed circular-risk photo-item-1-only calibration is installed for Training. Its
   evidence is explicitly not human ground truth; its matching still-photo assumption clears the
   separate numbering-policy gate.
@@ -870,35 +870,32 @@ from `defer` → ready mid-session. Training never calls the ranker to make the 
 
 ## 4. Go autonomous — auto mode (it swipes for you)
 
-**Current release state (2026-10-24): exact-build 10.9.0 calibration and a verified Training release
-are installed; AUTO is available when the owner selects AUTO and Start.** The config remains in
+**Current release state (2026-11-03): an exact-build 10.10.0 calibration is installed; AUTO is
+blocked until steps 3 to 5 below are completed on this build.** The config remains in
 `mode: training`. The hybrid AI-reviewed photo-item-1-only campaign used four calibration and
 three separately captured held-out profiles on device `33111JEHN04475`
-(1080x2400). The measured bounds are identity `1.3212` and inline item `14.9099`, with zero
+(1080x2400). The measured bounds are identity `1.768` and inline item `14.9099`, with zero
 held-out foreign accepts and zero false refusals. The owner renewed the explicitly UNMEASURED
-still-photo assumption for this build/device, and `version_compatibility_review` was removed.
-Training run `cd29bea37976` supplied the complete manual Like and Pass chains and database
-persistence; `tools.hinge_training_release` verified it at `2026-10-24T10:36:35Z`.
-The installed `training_release_evidence` points to
-`ops/release/cd29bea37976/training-release/hinge_training_release.json`, and that run is protected
-from debug retention. The historical 10.0.1 manual release for `d8547ff144b4` remains retained and
+still-photo assumption for this build/device. Training run `cd29bea37976` verified the superseded
+10.9.0 build, so its `training_release_evidence` mapping was removed; its files under
+`ops/release/cd29bea37976/` and its run stay retained as an audit record. The historical 10.0.1 manual release for `d8547ff144b4` remains retained and
 protected as audit evidence; its `observe_release_evidence` mapping is no longer installed.
 Production OBSERVE is retired. The reusable release procedure is:
 
-1. **Calibrate the live build (completed for 10.9.0).** After a future update, run a fresh
+1. **Calibrate the live build (completed for 10.10.0).** After a future update, run a fresh
    targeting campaign on that build (section 2, the hybrid AI-reviewed
    `capture` → `tools.hinge_calibration_review` → `measure` path). Keep `config.yaml`
    unchanged while capturing: the live capture reads the build, and so picks the 10.8+ heart
    glyph, only while a targeting calibration is configured. `measure`, `verify-entry-anchor` and
    `attach-operational-evidence` now take the build from the sessions' manifests and refuse
    sessions that disagree on it. Choose Pass or `--send-like` per run.
-2. **Install it (completed for 10.9.0).** Paste the emitted calibration, re-accept the still-photo
+2. **Install it (completed for 10.10.0).** Paste the emitted calibration, re-accept the still-photo
    assumption for the new build (owner decision), and delete `version_compatibility_review`.
    A release binds only an exact-build calibration.
-3. **Record a short Training run (completed by `cd29bea37976`)** with at least one Like and one
+3. **Record a short Training run (pending for 10.10.0)** with at least one Like and one
    Pass on that build. Keep it short: the verifier needs that Like's and that Pass's retained
    frames, and the retained pool rotates in long sessions.
-4. **Verify it (completed for `cd29bea37976`)**, still in `mode: training`:
+4. **Verify it (pending for 10.10.0)**, still in `mode: training`:
    `python -m tools.hinge_training_release --config config.yaml --debug-run data/hinge_debug/<run> --run-id <run> --out ops/release/<run>/training-release`.
    The tool needs that run's first rows: the run binding, then a `training_session_environment`
    row whose live build, frame, device and calibration digest match the calibration, with no
@@ -908,7 +905,7 @@ Production OBSERVE is retired. The reusable release procedure is:
    the accepted successor proof, the verified action, and the persisted action. Finally, the
    store must hold the manual label, decision, Like opener and Like send-evidence rows for exactly
    those profiles.
-5. **Install the release (completed; owner selection and Start pending).** Paste the printed
+5. **Install the release (pending for 10.10.0).** Paste the printed
    `training_release_evidence` mapping, remove `observe_release_evidence` (AUTO accepts exactly
    one gate; `d8547ff144b4` stays protected in
    `debug_protect_runs` and its `ops/release/` files stay as the audit record). Keep `mode: training`

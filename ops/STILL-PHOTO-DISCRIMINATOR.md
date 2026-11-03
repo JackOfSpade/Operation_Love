@@ -1091,6 +1091,55 @@ most 3. Fixing the walk restores the breadth §5f intended, not more of it. What
 is the SECOND numbered item, and the second item is what turns doc 5.6's bound back into a
 separation proof instead of a two-sample ceiling.
 
+## 5k. Addendum 2026-11-03: the centring correction was undone by navigation's identity recovery
+
+`STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC` is unchanged at 0.150. Only the path a corrected card takes
+back to its dwell changed.
+
+**Symptom.** `card centre offset -0.210 then -0.210 then -0.214 then -0.214 over 3 corrective
+scroll(s)`. Four refusals across 10.9.0 and 10.10.0, each spending one permanent Priority Like.
+
+**Mechanism, from recorded evidence.** Each correction clamps at the deck top, and `navigate_to_item`
+then scrolls back down because identity cannot be read there.
+
+- Every cycle in all four refusals is a reverse correction followed by a forward gesture of exactly
+  240px, 12 of 12. That is `_READ_SCROLL_FRAC_MIN`, the size of the navigator's scroll-top identity
+  recovery. Read gestures are jittered. The corrections varied from 240 to about 360px and changed
+  nothing, because the deck top clamps all of them.
+- At the deck top the first card segments at rows 553..1527, offset -0.089. A 240px drag delivers
+  219px, so the predicted landing is -0.089 - 219/1800 = -0.211, against -0.209 to -0.214 observed.
+- That prediction rests on recorded top frames and gesture logs. No frame at -0.21 was ever saved, so
+  the rows there are derived, not observed.
+
+**Hypotheses tested.** "Re-navigation re-parks the card" is true, through that recovery branch. "The
+toolbar clips the rect at row 236" is refuted: the content band starts at row 300, and the card
+segments complete at its full 974px on every recorded frame with offsets that stay linear in scroll.
+
+**Why a smaller correction cannot fix it.** The zone reaches only about 110px below the deck top, and
+those rows are exactly the ones the entry gate refuses. The band reads a partly collapsed header
+there: 5.9 to 34.8 from the same profile's sticky header at 19..109px, against a 1.0 match limit. So
+re-navigating from anywhere inside the zone is a refusal, however precisely the card is placed.
+
+**Fix.** `_carried_park_after_correction`: when a correction's landing does not match the indexed
+header, the card's rows and heart point are carried across the measured shift and re-proved on that
+frame by `_verified_target_frame_proof`, which still demands exactly one card at exactly those rows
+with exactly one heart at exactly that point. This is the rule the re-attach probe's residual already
+lives by. A landing that does show the header still re-navigates.
+
+**Why this keeps the safety requirement.** The dwell, probe, mute screen and zone gate all still run,
+now at a position actually inside the zone, so the proof is stronger than the refusal it replaces.
+Identity was proved on the frame the correction left, and tapping at the deck top already happens
+live after a probe residual.
+
+**Offline evidence.** On 10 recorded pairs from the 10.10.0 sessions, the shift estimator measured the
+top-to-parked distance exactly equal to the segmented row difference, in both directions (20 of 20),
+at confidence 1.0. Exact equality matters because the re-proof compares rows exactly: a 1px error
+is a refusal, at the same cost as today.
+
+**Not verified.** None of this has run on the device. The first live question is whether the
+re-attach probe, starting from the deck top, exits forward and returns inside the zone. Its code
+handles that clamp, but this exact sequence has not been observed.
+
 ## 6. Plan B (documented, not chosen)
 
 If held-out video accepts never reach zero, the honest fallback is to change the

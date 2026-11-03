@@ -49,6 +49,11 @@ def _isolated_android_lock_root(monkeypatch, tmp_path):
     monkeypatch.setattr(
         sup.cfg_mod, "_validate_hinge_auto_release_evidence", lambda _cfg: None
     )
+    # The shipped config's Training gate re-hashes a gitignored debug run, which only the
+    # owner's checkout retains; CI and fresh worktrees must not depend on it either.
+    monkeypatch.setattr(
+        sup.cfg_mod, "_validate_hinge_training_release_evidence", lambda _cfg: None
+    )
     original_reason = sup.platforms.unavailable_reason
     monkeypatch.setattr(
         sup.platforms,

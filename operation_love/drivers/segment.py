@@ -289,7 +289,16 @@ _CARD_CORNER_RAMP_SLACK_PX = 2
 # non-monotonic. [corpus: 1px dips occur on real corner arcs from antialiasing; the 5 rejected
 # bottom edges dipped by more.] Purely measurement slack on a shape that is monotonic by
 # construction.
-_CARD_CORNER_DIP_PX = 1
+# 2 rather than 1 since 2026-11-03. In run f1914c719a83 one photo's bottom arc read 961 then 959 on
+# frames 20 and 21, but had no such dip one scroll step earlier on frame 19. That photo sat above a
+# pale-topped photo, so the gap between them measured 73 rows and this corner was its only proof
+# of a boundary: the cards merged, and the two-heart refusal stopped the run. The arc must still
+# reach full card width at the row count its radius predicts.
+# [corpus: over 8432 saved 1080x2400 frames, going from 1 to 2 changed the segmentation of 6.
+# 4 are copies of this incident's 2 distinct frames, now split correctly. The other 2 are a
+# before/after pair of one profile, where a real 974px photo's bottom edge became observed. No
+# frame gained a wrong edge.]
+_CARD_CORNER_DIP_PX = 2
 
 # A confirmed scroll-top has one layout edge that ordinary frames do not: profile-name chrome,
 # then a page-background gap, then the first media card. A pale photo can make one of that

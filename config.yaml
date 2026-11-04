@@ -217,6 +217,8 @@ apps:
                        #   negative control proving the rule is per-screen-state, not blanket
       - 5d79a2d45bfa   # 2026-08-30 Allison low-contrast gutter incident; frames 7..10 are the
                        #   real-pixel replay for segment._restore_low_contrast_card_surface_at_strict_gutter
+      - f1914c719a83   # 2026-11-03 profile T refusal; its saved frames are the real-pixel replay
+                       #   for segment._CARD_CORNER_DIP_PX
       # The local frames in test_hinge_observe's rewind regression. The earlier capture proves
       # the Vicki card's genuine filter-chip top; the later refusal proves the old 0.78h fast
       # rewind left the same card scrolled with its sticky header visible.

@@ -471,6 +471,60 @@ def test_a_rounded_card_bottom_proves_an_overlong_page_gap_is_a_boundary():
     assert not r.blocks[1].top.observed
 
 
+# The bottom arc of the card in live run f1914c719a83, frame 20, walking UP from its edge row.
+# 961 -> 959 is a 2px dip that the same card did not show one scroll step earlier.
+_MEASURED_ARC_WITH_TWO_PX_DIP = (
+    936, 942, 946, 950, 952, 955, 957, 958, 961, 959, 964,
+    966, 968, 968, 970, 970, 972, 972, 972, 973, 974,
+)  # fmt: skip
+
+
+def _bottom_corner_radius(arc):
+    rows = np.array(arc[::-1])
+    return segment._corner_radius(
+        np.ones(len(rows), dtype=bool),
+        rows,
+        y=len(rows) - 1,
+        step=-1,
+        lo_row=0,
+        hi_row=len(rows),
+        card_width=974,
+        radius_px=segment._CARD_CORNER_PX,
+        ramp_slack=segment._CARD_CORNER_RAMP_SLACK_PX,
+        dip_px=segment._CARD_CORNER_DIP_PX,
+    )
+
+
+def test_a_two_px_dip_in_a_measured_corner_arc_is_still_a_corner():
+    assert _bottom_corner_radius(_MEASURED_ARC_WITH_TWO_PX_DIP) == 19.0
+
+
+def test_a_three_px_dip_in_a_corner_arc_is_not_a_corner():
+    arc = list(_MEASURED_ARC_WITH_TWO_PX_DIP)
+    assert arc[9] == 959
+    arc[9] = 958
+    assert _bottom_corner_radius(arc) is None
+
+
+def test_a_dipping_card_bottom_still_splits_an_overlong_page_gap():
+    """The dip limit decides the outcome through `segment_frame`, not only in the helper."""
+    f = _Frame()
+    f.card(500, 1200)
+    f.card(1265, 2300, radius=0)
+    # Pull the left edge of one arc row in, so its span is 2px narrower than the row below it.
+    row, below = 1191, 1192
+    below_inset = int(np.argmax(f.gray[below, _CARD_X0:] != f.col[below]))
+    f.gray[row, _CARD_X0 : _CARD_X0 + below_inset + 2] = f.col[row]
+    assert f.gray[row, _CARD_X1 - below_inset - 1] != f.col[row]
+
+    r = f.segment()
+    assert _extents(r) == [(500, 1200), (1265, _BAND1)]
+    assert r.blocks[0].bottom.kind == segment.EDGE_CARD_CORNER
+
+    strict = f.segment(card_corner_dip_px=1)
+    assert _extents(strict) == [(500, _BAND1)]
+
+
 def test_an_overlong_page_gap_without_a_corner_or_heart_stays_unsplit():
     """The new symmetry is corner evidence, not a generic widening of the gutter window."""
     f = _Frame()
@@ -615,6 +669,36 @@ def test_allison_low_contrast_gutter_frames_replay_when_available():
         )
         assert result.ok, (frame.name, result.failures)
         assert result.unassigned_hearts == ()
+
+
+def test_pale_topped_photo_frames_replay_into_a_page_when_available():
+    """Replay of the saved refusal for profile `T`; CI may not carry private screenshots."""
+    run = Path(__file__).resolve().parents[1] / "data/hinge_debug/f1914c719a83"
+    paths = [
+        run / f"item_index_refused_ace3a6a102df_frame_{number}.png"
+        for number in (18, 19, 20, 21)
+    ]
+    if not all(path.exists() for path in paths):
+        pytest.skip("the profile T refusal screenshots are not on this machine")
+
+    template = hinge._load_template("hinge_like_button_10_8.png")
+    assert template is not None
+    index = item_index.build_item_index(
+        [path.read_bytes() for path in paths],
+        content_band=_CONTENT_BAND,
+        like_template=template,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        at_scroll_top=False,
+        identity_band=None,
+    )
+
+    assert index.failures == ()
+    assert [(b.page_y0, b.page_y1, b.kind) for b in index.blocks] == [
+        (300, 716, item_index.ITEM_PARTIAL),
+        (769, 1743, item_index.ITEM_SELECTABLE),
+        (1796, 2770, item_index.ITEM_PARTIAL),
+    ]
+    assert [len(b.hearts) for b in index.blocks] == [1, 1, 1]
 
 
 # =====================================================================================

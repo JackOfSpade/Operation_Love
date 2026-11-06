@@ -15,8 +15,8 @@
     "operation_love/opener/opener.py"
   ],
   "generated_from": {
-    "total_revisions": 68,
-    "evaluated_revisions": 44,
+    "total_revisions": 70,
+    "evaluated_revisions": 46,
     "unevaluable_revisions": 24
   },
   "eras": [
@@ -741,10 +741,10 @@
       "first_commit": "a3cfcf5293a0287e8e6cb1cfe5a9de5bd6e3347e",
       "first_date": "2026-10-20T21:49:39-04:00",
       "first_subject": "Answer a header's own choice instead of handing it back to her",
-      "last_commit": "daab6d2edd295ecbce845d741dddc0fb613b0284",
-      "last_date": "2026-11-03T15:34:52-05:00",
-      "last_subject": "Recalibrate Hinge targeting for 10.10.0",
-      "commit_count": 9,
+      "last_commit": "3eeb9f32c01f992eee258921a0d9ee64430602ff",
+      "last_date": "2026-11-06T06:19:29-05:00",
+      "last_subject": "Install verified Hinge 10.10.0 Training release",
+      "commit_count": 11,
       "commits": [
         "a3cfcf5293a0287e8e6cb1cfe5a9de5bd6e3347e",
         "772b72b1fcd98054b1de4b4454b5236c3e4bceb1",
@@ -754,7 +754,9 @@
         "3ec33209c8a19b5167a7c986928d12a4ba4fe798",
         "5f6b472424563be8c71775824e131819fa348def",
         "d2233a9cb8a468dc5e240548ee590305ba46e6f6",
-        "daab6d2edd295ecbce845d741dddc0fb613b0284"
+        "daab6d2edd295ecbce845d741dddc0fb613b0284",
+        "582c4541194b096c021e892dbfbf7f8a48e724a4",
+        "3eeb9f32c01f992eee258921a0d9ee64430602ff"
       ],
       "rules": [
         "SHARED CONTEXT RULE",

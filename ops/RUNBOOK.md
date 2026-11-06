@@ -870,10 +870,12 @@ from `defer` → ready mid-session. Training never calls the ranker to make the 
 
 ## 4. Go autonomous — auto mode (it swipes for you)
 
-**Current release state (2026-11-03): an exact-build 10.10.0 calibration is installed; AUTO is
-blocked until steps 3 to 5 below are completed on this build.** The config remains in
-`mode: training`. The hybrid AI-reviewed photo-item-1-only campaign used four calibration and
-three separately captured held-out profiles on device `33111JEHN04475`
+**Current release state (2026-11-06): Hinge 10.10.0 is calibrated AND released through Training
+run `46d05912b899`; its `training_release_evidence` mapping is installed.** The config stays in
+`mode: training`: the owner selects AUTO in the Hub dropdown and presses Start. From 2026-11-06
+AUTO's Rose-popup helper refuses to act on Hinge's flagged-message warning and needs a 0.8
+template match before tapping "Send Like anyway". The hybrid AI-reviewed photo-item-1-only
+campaign used four calibration and three separately captured held-out profiles on device `33111JEHN04475`
 (1080x2400). The measured bounds are identity `1.768` and inline item `14.9099`, with zero
 held-out foreign accepts and zero false refusals. The owner renewed the explicitly UNMEASURED
 still-photo assumption for this build/device. Training run `cd29bea37976` verified the superseded
@@ -892,10 +894,10 @@ Production OBSERVE is retired. The reusable release procedure is:
 2. **Install it (completed for 10.10.0).** Paste the emitted calibration, re-accept the still-photo
    assumption for the new build (owner decision), and delete `version_compatibility_review`.
    A release binds only an exact-build calibration.
-3. **Record a short Training run (pending for 10.10.0)** with at least one Like and one
+3. **Record a short Training run (completed for 10.10.0)** with at least one Like and one
    Pass on that build. Keep it short: the verifier needs that Like's and that Pass's retained
    frames, and the retained pool rotates in long sessions.
-4. **Verify it (pending for 10.10.0)**, still in `mode: training`:
+4. **Verify it (completed for 10.10.0)**, still in `mode: training`:
    `python -m tools.hinge_training_release --config config.yaml --debug-run data/hinge_debug/<run> --run-id <run> --out ops/release/<run>/training-release`.
    The tool needs that run's first rows: the run binding, then a `training_session_environment`
    row whose live build, frame, device and calibration digest match the calibration, with no
@@ -905,7 +907,7 @@ Production OBSERVE is retired. The reusable release procedure is:
    the accepted successor proof, the verified action, and the persisted action. Finally, the
    store must hold the manual label, decision, Like opener and Like send-evidence rows for exactly
    those profiles.
-5. **Install the release (pending for 10.10.0).** Paste the printed
+5. **Install the release (completed for 10.10.0).** Paste the printed
    `training_release_evidence` mapping, remove `observe_release_evidence` (AUTO accepts exactly
    one gate; `d8547ff144b4` stays protected in
    `debug_protect_runs` and its `ops/release/` files stay as the audit record). Keep `mode: training`

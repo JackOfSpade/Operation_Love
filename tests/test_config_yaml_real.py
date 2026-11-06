@@ -13,6 +13,7 @@ against inline YAML in other test files, never against the file we actually ship
 config.yaml that could not start was therefore fully CI-green.
 """
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -73,7 +74,7 @@ def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
     assert cfg.hinge_compatible_version is None
 
 
-def test_shipped_config_uses_training_until_live_auto_release_is_renewed(cfg):
+def test_shipped_config_keeps_training_selected_with_installed_auto_release(cfg):
     assert cfg.enabled_apps == ["hinge"] and cfg.mode == "training"
     assert cfg.limits == {}
     # 2026-08-28: shipped on the persistent transport after a live A/B through the real
@@ -86,8 +87,27 @@ def test_shipped_config_uses_training_until_live_auto_release_is_renewed(cfg):
     hinge = cfg.apps["hinge"]
     assert "observe_release_evidence" not in hinge
     assert "ai_reviewed_observe_release_evidence" not in hinge
-    assert "training_release_evidence" not in hinge
-    assert {"d8547ff144b4", "cd29bea37976"} <= set(hinge["debug_protect_runs"])
+    release = hinge["training_release_evidence"]
+    cal = hinge["targeting_calibration"]
+    assert release["production_run_id"] == "46d05912b899"
+    assert release["production_run_reference"] == "data/hinge_debug/46d05912b899"
+    assert release["hinge_version_name"] == cal["hinge_version_name"] == "10.10.0"
+    assert release["device"] == cal["device"]
+    assert list(release["frame_size_px"]) == list(cal["frame_size_px"])
+    verification = Path(release["verification_file"])
+    assert verification.is_file()
+    assert (
+        hashlib.sha256(verification.read_bytes()).hexdigest()
+        == (release["verification_sha256"])
+    )
+    verified = json.loads(verification.read_text())
+    assert verified["production_run_id"] == release["production_run_id"]
+    assert verified["debug_actions_sha256"] == release["debug_actions_sha256"]
+    assert verified["calibration_sha256"] == release["calibration_sha256"]
+    assert verified["hinge_version_name"] == release["hinge_version_name"]
+    assert {"d8547ff144b4", "cd29bea37976", "46d05912b899"} <= set(
+        hinge["debug_protect_runs"]
+    )
     assert Path(
         "ops/release/d8547ff144b4/manual-release/hinge_observe_release.json"
     ).is_file()

@@ -165,3 +165,67 @@ def test_unreviewed_refusal_still_lets_a_paywall_win(monkeypatch):
     with pytest.raises(hinge.HingeDeckBlockedError, match="paywall"):
         driver._verify_like_landed(b"before")
     assert adb.taps == []
+
+
+def _blurred_warning(sigma=0.5):
+    """The real warning, blurred just enough to lift its 'Send anyway' button past 0.6 against
+    the Rose modal's 'Send Like anyway' template (0.5953 unblurred, 0.6022 at sigma 0.5)."""
+    import cv2
+    import numpy as np
+
+    image = cv2.imdecode(np.frombuffer(WARNING, np.uint8), cv2.IMREAD_COLOR)
+    ok, buf = cv2.imencode(".png", cv2.GaussianBlur(image, (0, 0), sigma))
+    return buf.tobytes()
+
+
+def _upsell_score(frame):
+    for threshold in (0.99, 0.9, 0.8, 0.7, 0.6, 0.55, 0.5):
+        if hinge._match_glyph(
+            frame,
+            hinge._load_template("hinge_send_like_anyway.png"),
+            side="any",
+            threshold=threshold,
+        ):
+            return threshold
+    return 0.0
+
+
+def test_upsell_button_floor_separates_the_warning_from_a_rose_modal():
+    """Pins the measured margin both ways: the warning (and a blurred one, which crossed the
+    old 0.6 floor) stays below the floor, and a Rose modal stays above it."""
+    assert _upsell_score(_blurred_warning()) >= 0.6  # the case the old floor would tap
+    assert _upsell_score(WARNING) < hinge._UPSELL_BUTTON_MATCH_THRESHOLD
+    assert _upsell_score(_blurred_warning()) < hinge._UPSELL_BUTTON_MATCH_THRESHOLD
+    assert _upsell_score(_modal_frame()) >= hinge._UPSELL_BUTTON_MATCH_THRESHOLD
+
+
+@pytest.mark.parametrize(
+    "frame", [WARNING, _blurred_warning()], ids=["real", "blurred"]
+)
+def test_rose_helper_never_taps_a_message_warning(frame):
+    adb = FakeAdb([frame, frame])
+    assert _drv(adb)._handle_rose_upsell() is False
+    assert adb.taps == []
+
+
+def test_rose_helper_skips_warning_even_if_the_glyph_would_match(monkeypatch):
+    """The structural guard, independent of any threshold: on a recognised warning the helper
+    does not even ask the template."""
+    adb = FakeAdb([WARNING, WARNING])
+    monkeypatch.setattr(hinge, "_match_glyph", lambda *_a, **_k: [(464, 2197)])
+    assert _drv(adb)._handle_rose_upsell() is False
+    assert adb.taps == []
+
+
+@pytest.mark.parametrize(
+    "frame", [WARNING, _blurred_warning()], ids=["real", "blurred"]
+)
+def test_auto_post_send_order_refuses_a_warning_without_any_tap(frame):
+    """AUTO's real order after the Send tap: Rose helper, then the landing check. Neither may
+    tap the warning; the landing check refuses it."""
+    adb = FakeAdb([frame, frame, frame])
+    driver = _drv(adb)
+    assert driver._handle_rose_upsell() is False
+    with pytest.raises(hinge.HingeActionError, match="Nobody reviewed it"):
+        driver._verify_like_landed(b"before")
+    assert adb.taps == []

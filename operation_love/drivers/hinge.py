@@ -2702,6 +2702,15 @@ def _match_glyph(
         return []
 
 
+# Floor for tapping the "upsell_dismiss" match as a BUTTON (Hinge's "Send Like anyway").
+# MEASURED 2026-11-04 over 8626 retained frames: all 9 real Rose modals score 1.000 (still at
+# least 0.85 under a 2px Gaussian blur), the four real message-warning frames score 0.5953 on
+# their "Send anyway" button (0.60-0.61 blurred), and nothing else scores above 0.4758. The old
+# 0.6 floor sat 0.0047 above that warning, so a slightly blurred or rescaled warning could be
+# tapped as an upsell and confirm an opener nobody reviewed.
+_UPSELL_BUTTON_MATCH_THRESHOLD = 0.8
+
+
 def _message_warning_controls(frame: bytes) -> tuple[bool, tuple[int, int] | None]:
     """Recognise Hinge's message warning and its explicit Send anyway control.
 
@@ -4511,12 +4520,24 @@ class AndroidDriver(DatingAppDriver):
         the one that still gets to fail loudly.
         """
         template = self._template("upsell_dismiss")
+        # A zone spec's template only identifies the sheet; a button spec's template IS the
+        # tap target, so it gets the strict floor (see _UPSELL_BUTTON_MATCH_THRESHOLD).
+        threshold = (
+            0.6
+            if self.spec.upsell_dismiss_zone is not None
+            else _UPSELL_BUTTON_MATCH_THRESHOLD
+        )
 
         def _probe():
             frame = self._screencap(on_blank="none")
             if frame is None:
                 return []  # can't see -> assume no modal (see docstring)
-            return _match_glyph(frame, template, side="any", threshold=0.6)
+            if self.spec.has_message_warning and _message_warning_controls(frame)[0]:
+                # Hinge's flagged-message warning is not an upsell. Its "Send anyway" would
+                # confirm the send, so it is _verify_like_landed's to refuse or confirm,
+                # never this helper's to tap.
+                return []
+            return _match_glyph(frame, template, side="any", threshold=threshold)
 
         hits = _retry_until(
             _probe, tries, 0.5
@@ -14014,7 +14035,10 @@ class AndroidDriver(DatingAppDriver):
                 continue
             sheet_up = self._observe_like_sheet_visible(frame)
             modal_hits = _match_glyph(
-                frame, self._template("upsell_dismiss"), side="any", threshold=0.6
+                frame,
+                self._template("upsell_dismiss"),
+                side="any",
+                threshold=_UPSELL_BUTTON_MATCH_THRESHOLD,
             )
             modal_up = bool(modal_hits)
             if modal_up:

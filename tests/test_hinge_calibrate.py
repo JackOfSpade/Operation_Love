@@ -1705,6 +1705,91 @@ def test_an_unsettled_read_scroll_skips_only_a_profile_it_can_identify(
         assert skips == []
 
 
+@pytest.mark.parametrize("identity_state", ["known", "unknown"])
+def test_an_unplannable_read_scroll_skips_only_a_profile_it_can_identify(
+    monkeypatch, tmp_path, identity_state
+):
+    """A frame the scroll planner refuses (live 2026-11-15, Hinge 10.12.1: a like heart in a
+    blank band under its photo fell outside every segmented block) used to abort the session
+    and discard its banked profiles.  Before any heart that costs this one profile, exactly
+    like an unsettled read scroll; a skip still requires a known current identity."""
+
+    class _Driver:
+        identity_band = _IDENTITY_BAND
+        content_band = _CONTENT_BAND
+        dwell_s = 0.0
+        adb = None
+
+        def __init__(self):
+            self.scrolls = []
+
+        def _template(self, _name):
+            return object()
+
+        def _scroll_down_one(self, frac, x_frac):
+            self.scrolls.append((frac, x_frac))
+
+    identity = ProfileIdentity(
+        (1,) if identity_state == "known" else None,
+        _IDENTITY_BAND,
+        (64, 16),
+        0,
+        20.0,
+        identity_state,
+        agreeing_frames=2,
+    )
+
+    def refuses(*_a, **_kw):
+        raise cal.ScrollStepError(
+            "refusing to size a scroll from a frame whose segmentation contradicts itself"
+        )
+
+    skips = []
+
+    def record_skip(_driver, **kwargs):
+        skips.append(kwargs["reason"])
+        return {"reason_code": kwargs["reason"].code}
+
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_a: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(
+        cal, "_rewind_automated_profile_to_confirmed_top", lambda *_a, **_kw: b"top"
+    )
+    monkeypatch.setattr(cal, "capture_profile_identity", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(
+        cal,
+        "build_item_index",
+        lambda *_a, **_kw: (_ for _ in ()).throw(cal.ItemIndexError("incomplete")),
+    )
+    monkeypatch.setattr(cal, "_plan_card_scroll", refuses)
+    monkeypatch.setattr(cal, "_skip_automated_profile_before_heart", record_skip)
+
+    driver = _Driver()
+    expected = cal._ProfileSkipped if identity_state == "known" else cal._CaptureAbort
+    with pytest.raises(expected) as excinfo:
+        cal._capture_one_profile_unattended(
+            driver,
+            tmp_path,
+            ordinal=1,
+            frame_counter=0,
+            frames_meta=[],
+            used_profile_ids=set(),
+            review_gate=None,
+            send_like=False,
+        )
+
+    # The refused frame never sized a gesture, in either branch.
+    assert driver.scrolls == []
+    if identity_state == "known":
+        assert skips[0].code == "target_unavailable_or_incomplete_index"
+        assert "no alias-safe read scroll" in skips[0].detail
+        assert "contradicts itself" in skips[0].detail
+    else:
+        assert skips == []
+        assert not isinstance(excinfo.value, cal._ProfileSkipped)
+        assert "no alias-safe read scroll" in str(excinfo.value)
+
+
 def test_pre_action_skip_meeting_the_unsupported_layout_escalates_instead_of_killing_the_session(
     monkeypatch, tmp_path
 ):

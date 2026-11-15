@@ -259,6 +259,22 @@ _GUTTER_TOLERANCE_PX = 5
 # it can never create a new item or renumber anything below it.
 _GUTTER_BACKGROUND_LEVEL_TOLERANCE = 1.0
 
+# How many rows of a low-contrast card-white residual, counted from the edge that touches
+# ordinary card content, may themselves read as page-coloured at the strict tolerance above.
+#
+# [live 2026-11-15, Hinge 10.12.1, ops/calibration/targeting_20261115_10_12_blank_footer_card:
+# a photo card whose image ends above a blank white footer holding the like heart. The 161
+# footer rows measure 3..5 grey levels off the page EXCEPT the second row under the image, the
+# image scaler's edge ringing, which measures exactly 1.0. That one row failed the
+# "uniformly card-white" gate, so the footer and the real 53px gutter stayed one 214px cut
+# and the heart inside it became an `unassigned_hearts` hard refusal.]
+#
+# Two rows is the smallest window that covers the measured seam (row index 1) and nothing a
+# page gutter could hide in: a real gutter is 47..58 rows and must still be found, whole and
+# strict, flush with the run's OTHER end. One sample, so this is a floor on the seam's depth,
+# not a bound; a deeper seam stays the loud RUN_TOO_LONG refusal it was.
+_CARD_SURFACE_CONTENT_SEAM_PX = 2
+
 # Corner radius window, in px, that a card's own top/bottom edge row may measure. [doc 5.10:
 # "Card corner radius | ~20-23px". corpus: at the 219 edges a canonical gutter independently
 # proves are card edges, the radius implied by the edge row's non-background span is 19.0 on 105
@@ -761,8 +777,9 @@ def _restore_low_contrast_card_surface_at_strict_gutter(
     * only an existing ``RUN_TOO_LONG`` is considered;
     * its PREFIX or SUFFIX must be a *maximal*, canonical-length run whose every row agrees
       with the page at the stricter gutter tolerance;
-    * the adjoining residual must be uniformly card-white rather than page-coloured, and must
-      touch normally classified card content on its far side; and
+    * the adjoining residual must be uniformly card-white rather than page-coloured (bar the
+      ``_CARD_SURFACE_CONTENT_SEAM_PX`` rows nearest the content, which may carry its edge
+      ringing), and must touch normally classified card content on its far side; and
     * exactly one matched lower-right like heart must sit at Hinge's measured 60..120px bottom
       inset above the candidate gutter.
 
@@ -773,6 +790,9 @@ def _restore_low_contrast_card_surface_at_strict_gutter(
     falsely complete card.
     """
     heart_lo, heart_hi = _SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX
+    # Rows of the residual nearest the card content it touches may carry the content's own
+    # edge ringing rather than the surface level; see the constant for the measurement.
+    seam = _CARD_SURFACE_CONTENT_SEAM_PX
 
     def strict_prefix_end(run: BackgroundRun) -> int:
         y = run.y0
@@ -803,7 +823,10 @@ def _restore_low_contrast_card_surface_at_strict_gutter(
         if (
             gutter_lo <= prefix_end - run.y0 <= gutter_hi
             and prefix_end < run.y1
-            and np.all(level_delta[prefix_end : run.y1] > gutter_level_tolerance)
+            and np.all(
+                level_delta[prefix_end : max(prefix_end, run.y1 - seam)]
+                > gutter_level_tolerance
+            )
             and run.y1 < r1
             and is_card[run.y1]
             and has_bottom_heart(run.y0)
@@ -816,7 +839,10 @@ def _restore_low_contrast_card_surface_at_strict_gutter(
         if (
             gutter_lo <= run.y1 - suffix_start <= gutter_hi
             and run.y0 < suffix_start
-            and np.all(level_delta[run.y0 : suffix_start] > gutter_level_tolerance)
+            and np.all(
+                level_delta[min(suffix_start, run.y0 + seam) : suffix_start]
+                > gutter_level_tolerance
+            )
             and run.y0 > r0
             and is_card[run.y0 - 1]
             and has_bottom_heart(suffix_start)

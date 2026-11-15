@@ -606,6 +606,72 @@ def test_strict_gutter_suffix_recovers_low_contrast_trailing_card_surface():
     assert r.blocks[0].bottom.kind == segment.EDGE_GUTTER
 
 
+def _blank_footer_frame(page_coloured_rows: range) -> "_Frame":
+    """The suffix shape, with chosen footer rows reading as page background (see callers)."""
+    f = _Frame()
+    f.card(200, 1200, heart_y=1111, radius=0)
+    f.fill(
+        1079,
+        1200,
+        _CARD_X0,
+        _CARD_X1,
+        np.minimum(f.col[1079:1200].astype(np.int16) + 4, 255).astype(np.uint8)[
+            :, None
+        ],
+    )
+    for row in page_coloured_rows:
+        f.page(row, row + 1, _CARD_X0, _CARD_X1)
+    f.heart(1111)
+    f.card(1253, _BAND1 + 100, heart_y=2000, radius=0)
+    return f
+
+
+@pytest.mark.parametrize("seam_row", [1079, 1080])
+def test_strict_gutter_suffix_tolerates_the_content_edge_seam(seam_row):
+    """Live 2026-11-15 (Hinge 10.12.1): the second footer row under a photo carried the image
+    scaler's edge ringing and read as page-coloured, which alone failed the uniformly-white
+    gate and left the footer's heart inside a 214px cut."""
+    r = _blank_footer_frame(range(seam_row, seam_row + 1)).segment()
+
+    assert r.ok, r.failures
+    assert (1200, 1253) in _gutters(r)
+    assert _extents(r) == [(_BAND0, 1200), (1253, _BAND1)]
+    assert r.blocks[0].hearts == ((_HEART_CX, 1111),)
+
+
+def test_strict_gutter_suffix_seam_allowance_stops_at_its_measured_depth():
+    """One row deeper than the allowance is not a seam: the refusal stays loud."""
+    assert segment._CARD_SURFACE_CONTENT_SEAM_PX == 2
+    r = _blank_footer_frame(range(1081, 1082)).segment()
+
+    assert not r.ok
+    assert (1200, 1253) not in _gutters(r)
+
+
+def test_blank_footer_photo_card_frame_replays_when_available():
+    """Replay of the saved 10.12.1 refusal; CI does not carry private screenshots."""
+    frame = (
+        Path(__file__).resolve().parents[1]
+        / "ops/calibration/targeting_20261115_10_12_blank_footer_card/stuck_frame.png"
+    )
+    if not frame.exists():
+        pytest.skip("the blank-footer diagnostic screenshot is not on this machine")
+
+    template = hinge._load_template("hinge_like_button_10_8.png")
+    assert template is not None
+    result = segment.segment_frame(
+        frame.read_bytes(),
+        content_band=_CONTENT_BAND,
+        like_template=template,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+    )
+    assert result.ok, result.failures
+    assert result.unassigned_hearts == ()
+    footer_card = result.blocks[0]
+    assert footer_card.hearts == ((939, 985),)
+    assert (footer_card.y1, footer_card.bottom.kind) == (1075, segment.EDGE_GUTTER)
+
+
 def test_strict_gutter_rescue_requires_the_measured_heart_bottom_inset():
     """The same prefix shape without its anchoring heart stays a loud merged-card failure."""
     f = _Frame()

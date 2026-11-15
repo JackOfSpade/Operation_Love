@@ -4509,9 +4509,22 @@ def _capture_one_profile_unattended(
                 profile_min_spacing_px=min_spacing,
             )
         except (SegmentationError, ScrollStepError) as exc:
-            raise _CaptureAbort(
-                f"automated profile {ordinal}: no alias-safe read scroll: {exc}"
-            ) from exc
+            # Nothing has been hearted and no gesture was sized from the frame the planner
+            # refused, so this profile is unusable rather than unsafe -- the same position as an
+            # unsettled read scroll below.  With a known identity it becomes the bounded,
+            # reviewer-approved pre-action skip instead of discarding every banked profile
+            # (live 2026-11-15, Hinge 10.12.1: a photo card whose heart sits in a blank band
+            # under the image left that heart outside every segmented block).  Without a known
+            # identity there is nothing safe to skip, so that still aborts.
+            if identity is None or not identity.known:
+                raise _CaptureAbort(
+                    f"automated profile {ordinal}: no alias-safe read scroll: {exc}"
+                ) from exc
+            retry = _PreActionProfileRetry(
+                "target_unavailable_or_incomplete_index",
+                f"no alias-safe read scroll: {exc}",
+            )
+            raise skip_before_heart(retry, identity) from exc
         time.sleep(human_delay(driver.dwell_s))
         driver._scroll_down_one(step.frac, step.x_frac)
         try:

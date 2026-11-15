@@ -36,7 +36,7 @@ def test_config_yaml_loads_without_error(cfg):
 
 
 def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
-    """The shipped 10.10.0 config carries a complete, exact-build calibration.
+    """The shipped 10.12.1 config carries a complete, exact-build calibration.
 
     This assertion used to be its inverse — the file deliberately shipped WITHOUT one, and
     pinning that absence was how we proved an uncalibrated config was still a loadable,
@@ -57,7 +57,7 @@ def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
     assert cal["device"] == cfg.apps["hinge"]["serial"], (
         "calibration must bind the exact serial"
     )
-    assert cal["hinge_version_name"] == "10.10.0"
+    assert cal["hinge_version_name"] == "10.12.1"
     assert list(cal["frame_size_px"]) == [1080, 2400]
     assert cal["item_selection_policy_id"] == "hinge_photos_only_v2"
     assert cal["composer_layout_id"] == "hinge_inline_v1"
@@ -89,11 +89,12 @@ def test_shipped_config_keeps_training_selected_with_installed_auto_release(cfg)
     assert "ai_reviewed_observe_release_evidence" not in hinge
     release = hinge["training_release_evidence"]
     cal = hinge["targeting_calibration"]
-    assert release["production_run_id"] == "46d05912b899"
-    assert release["production_run_reference"] == "data/hinge_debug/46d05912b899"
-    assert release["hinge_version_name"] == cal["hinge_version_name"] == "10.10.0"
+    assert release["production_run_id"] == "0573b31e6898"
+    assert release["production_run_reference"] == "data/hinge_debug/0573b31e6898"
+    assert release["hinge_version_name"] == cal["hinge_version_name"] == "10.12.1"
     assert release["device"] == cal["device"]
     assert list(release["frame_size_px"]) == list(cal["frame_size_px"])
+    assert release["calibration_calibrated_at"] == cal["calibrated_at"]
     verification = Path(release["verification_file"])
     assert verification.is_file()
     assert (
@@ -105,18 +106,19 @@ def test_shipped_config_keeps_training_selected_with_installed_auto_release(cfg)
     assert verified["debug_actions_sha256"] == release["debug_actions_sha256"]
     assert verified["calibration_sha256"] == release["calibration_sha256"]
     assert verified["hinge_version_name"] == release["hinge_version_name"]
-    assert {"d8547ff144b4", "cd29bea37976", "46d05912b899"} <= set(
+    assert {"d8547ff144b4", "cd29bea37976", "46d05912b899", "0573b31e6898"} <= set(
         hinge["debug_protect_runs"]
     )
     assert Path(
         "ops/release/d8547ff144b4/manual-release/hinge_observe_release.json"
     ).is_file()
-    artifact = json.loads(
-        Path(
-            "ops/release/cd29bea37976/training-release/hinge_training_release.json"
-        ).read_text()
-    )
-    assert artifact["hinge_version_name"] == "10.9.0"
+    for run, version in (("cd29bea37976", "10.9.0"), ("46d05912b899", "10.10.0")):
+        artifact = json.loads(
+            Path(
+                f"ops/release/{run}/training-release/hinge_training_release.json"
+            ).read_text()
+        )
+        assert artifact["hinge_version_name"] == version
     coords = cfg.apps["bumble"].get("coords", {})
     assert set(coords) == {"swipe_start", "swipe_like_end", "swipe_pass_end"}
     assert "like_heart" not in coords and "pass_x" not in coords

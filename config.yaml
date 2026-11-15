@@ -187,7 +187,8 @@ apps:
       - 312b80bf4b50    # ops/release/312b80bf4b50/ holds this run's signed release artifacts
       - d8547ff144b4    # ops/release/d8547ff144b4/ holds this run's signed release artifacts
       - cd29bea37976    # historical (superseded) 10.9.0 supervised Training release; retain its exact actions log
-      - 46d05912b899    # verified 10.10.0 supervised Training release; retain its exact actions log
+      - 46d05912b899    # historical (superseded) 10.10.0 supervised Training release; retain its exact actions log
+      - 0573b31e6898    # verified 10.12.1 supervised Training release; retain its exact actions log
       - e7b13ac6fd21    # frames cited as fixture provenance by tests/test_hinge_out_of_likes.py
       - a01fbcd1e9a0    # actions.jsonl cited as evidence_ref by tests/test_label_retractions.py
       # Listed after the fact: BOTH of these were destroyed by the first retention pass on
@@ -316,29 +317,29 @@ apps:
     # To replace it with real evidence later, collect a corpus with tools/hinge_video_bound
     # (owner labeled) or tools/hinge_video_bound_auto (circular), then swap this block for
     # `still_photo_bound_evidence`. The two keys are mutually exclusive by design.
-    # TARGETING CALIBRATION — renewed 2026-11-03 for the live Hinge 10.10.0 build.
+    # TARGETING CALIBRATION — renewed 2026-11-15 for the live Hinge 10.12.1 build.
     # This schema-v3 mapping was emitted from four calibration and three separately captured
-    # held-out profiles using the hybrid AI-reviewed photo-item-1-only workflow. Held-out checks
-    # produced zero foreign accepts and zero false refusals. It licenses targeted suggestions in
-    # Training. The matching supervised Training release below
+    # held-out profiles using the hybrid AI-reviewed alternate photo-item-1/3 workflow. Held-out
+    # checks produced zero foreign accepts and zero false refusals. It licenses targeted
+    # suggestions in Training. The matching supervised Training release below
     # (`training_release_evidence`) also licenses AUTO on this build.
     targeting_calibration:
       schema_version: 3
       device: "33111JEHN04475"
-      hinge_version_name: "10.10.0"
+      hinge_version_name: "10.12.1"
       frame_size_px: [1080, 2400]
       composer_layout_id: hinge_inline_v1
       item_selection_policy_id: hinge_photos_only_v2
-      identity_match_max_dist: 1.768
+      identity_match_max_dist: 1.3764
       inline_item_max_dist: 14.9099
-      calibrated_at: "2026-11-03T14:06:52.588827+00:00 — measured from session(s): targeting_20261103_10_10_calibration_v2, targeting_20261103_10_10_heldout_v3"
+      calibrated_at: "2026-11-15T03:56:56.363667+00:00 — measured from session(s): targeting_20261115_10_12_calibration, targeting_20261115_10_12_heldout_v5"
       identity_band: [0.1, 0.048, 0.8, 0.094]
       content_band: [0.125, 0.875]
     still_photo_assumption_acceptance:
       acceptance: I_ACCEPT_UNMEASURED_CENTERED_AUTOPLAY_ASSUMPTION
-      accepted_at: "2026-11-03 renewal for Hinge 10.10.0, explicitly approved by the owner for this exact build/device and installation after the hybrid AI-reviewed calibration passed"
+      accepted_at: "2026-11-15 renewal for Hinge 10.12.1, explicitly approved by the owner for this exact build/device and installation after the hybrid AI-reviewed calibration passed"
       device: "33111JEHN04475"
-      hinge_version_name: "10.10.0"
+      hinge_version_name: "10.12.1"
       rationale: >-
         Measuring the held-out video false-accept rate needs roughly 420 profiles and 420 real
         passes at the observed rate of one video per seven profiles, which the owner judged
@@ -347,27 +348,27 @@ apps:
         detectable by the byte-exactness test. Accepted residual: a video that is not playing at
         all while observed, meaning stalled, buffering, unloaded, or an ended non-looping clip.
         The re-attach probe gives such a card a second trigger before anything is called a photo.
-    # SUPERVISED TRAINING RELEASE (2026-11-04, Hinge 10.10.0). `python -m
-    # tools.hinge_training_release` verified Training run 46d05912b899 (2 likes and 3 passes on
-    # device 33111JEHN04475) against the installed 10.10.0 targeting calibration above. This is
-    # the one AUTO release gate config accepts; the artifact is under ops/release/46d05912b899/.
+    # SUPERVISED TRAINING RELEASE (2026-11-15, Hinge 10.12.1). `python -m
+    # tools.hinge_training_release` verified Training run 0573b31e6898 (2 likes and 1 pass on
+    # device 33111JEHN04475) against the installed 10.12.1 targeting calibration above. This is
+    # the one AUTO release gate config accepts; the artifact is under ops/release/0573b31e6898/.
     # The top-level `mode` stays `training`: the owner chooses AUTO in the Hub dropdown. Config
     # re-hashes that run's actions.jsonl at every AUTO start, so the retention-protected log
-    # must stay untouched. The 10.9.0 release (cd29bea37976) is superseded and kept only as an
-    # audit record.
+    # must stay untouched. The 10.9.0 (cd29bea37976) and 10.10.0 (46d05912b899) releases are
+    # superseded and kept only as audit records.
     training_release_evidence:
       schema_version: 1
-      calibration_calibrated_at: "2026-11-03T14:06:52.588827+00:00 — measured from session(s): targeting_20261103_10_10_calibration_v2, targeting_20261103_10_10_heldout_v3"
-      calibration_sha256: 05d0dc92573b65cb9f008919dd094b89aab2fdf04ea67bbcc3e68232805495c9
+      calibration_calibrated_at: "2026-11-15T03:56:56.363667+00:00 — measured from session(s): targeting_20261115_10_12_calibration, targeting_20261115_10_12_heldout_v5"
+      calibration_sha256: e4cb83112fecdb814cedb83b7104ece09b6215b81c9b82a3c98801af86eb0459
       device: "33111JEHN04475"
-      hinge_version_name: "10.10.0"
+      hinge_version_name: "10.12.1"
       frame_size_px: [1080, 2400]
-      production_run_reference: data/hinge_debug/46d05912b899
-      production_run_id: 46d05912b899
-      debug_actions_sha256: 6524b3bdefe8ca4c9d558ad064aa1834b1d2cb901d0f6ee28fb37b994282f6e7
-      verification_file: ops/release/46d05912b899/training-release/hinge_training_release.json
-      verification_sha256: 4b85165a7d3f43b28a1788a544497845530a5212077b82a8ce2143d575354f13
-      verified_at: "2026-11-04T15:37:55.261750+00:00"
+      production_run_reference: data/hinge_debug/0573b31e6898
+      production_run_id: 0573b31e6898
+      debug_actions_sha256: c990249e6a4150a1c9547d67839d63ba6ac4cb669af1df91170c2c6c613f919f
+      verification_file: ops/release/0573b31e6898/training-release/hinge_training_release.json
+      verification_sha256: 852b866eed7274c8a589dd73310554acc3b5f6c3f2fcaed1c21ff96905ed5fae
+      verified_at: "2026-11-15T04:58:25.753294+00:00"
 # data_dir does NOT set a general data root today -- nothing in operation_love reads
 # cfg.data_dir directly (an audit found this 2026-09-02). Its one real effect is supplying
 # db_file's default below when db_file is omitted, so overriding data_dir alone still moves
